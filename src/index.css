@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer components {
+  label.cursor-pointer:has(> input[type="radio"]),
+  label.cursor-pointer:has(> input[type="checkbox"]) {
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  label.cursor-pointer:has(> input[type="radio"]:checked),
+  label.cursor-pointer:has(> input[type="checkbox"]:checked) {
+    background-color: #eff6ff;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+  }
+
+  label.cursor-pointer:has(> input[type="radio"]:checked) span,
+  label.cursor-pointer:has(> input[type="checkbox"]:checked) span {
+    color: #1e3a8a;
+    font-weight: 600;
+  }
+
+  label.cursor-pointer:has(> input[type="radio"]:checked) > input[type="radio"],
+  label.cursor-pointer:has(> input[type="checkbox"]:checked) > input[type="checkbox"] {
+    accent-color: #2563eb;
+    transform: scale(1.06);
+    transition:
+      transform 120ms ease,
+      accent-color 120ms ease;
+  }
+
+  label.cursor-pointer:has(> input[type="radio"]:focus-visible),
+  label.cursor-pointer:has(> input[type="checkbox"]:focus-visible) {
+    outline: 3px solid rgba(37, 99, 235, 0.55);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    label.cursor-pointer:has(> input[type="radio"]),
+    label.cursor-pointer:has(> input[type="checkbox"]),
+    label.cursor-pointer:has(> input[type="radio"]:checked) > input[type="radio"],
+    label.cursor-pointer:has(> input[type="checkbox"]:checked) > input[type="checkbox"] {
+      transition: none;
+    }
+  }
+}
