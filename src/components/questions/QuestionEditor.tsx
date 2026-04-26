@@ -45,8 +45,6 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
   const me = useAuthStore((s) => s.getMe());
   const [type, setType] = useState<QuestionType>(initialQuestion?.type || defaultType);
   const [defaultScore, setDefaultScore] = useState(5);
-  const [gradeLevel, setGradeLevel] = useState<number | undefined>(undefined);
-  const [subjectId, setSubjectId] = useState<string | undefined>(undefined);
   const [difficulty, setDifficulty] = useState<number>(3);
   const [analysis, setAnalysis] = useState("");
   const [stemBlocks, setStemBlocks] = useState<StemBlock[]>(initialQuestion?.stem || emptyStem());
@@ -63,8 +61,6 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
     if (initialQuestion) {
       setType(initialQuestion.type);
       setDefaultScore(initialQuestion.defaultScore);
-      setGradeLevel(initialQuestion.gradeLevel);
-      setSubjectId(initialQuestion.subjectId);
       setDifficulty(initialQuestion.difficulty ?? 3);
       setAnalysis(initialQuestion.analysis ?? "");
       setStemBlocks(initialQuestion.stem && initialQuestion.stem.length > 0 ? initialQuestion.stem : emptyStem());
@@ -86,8 +82,6 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
     } else {
       setType(defaultType);
       setDefaultScore(5);
-      setGradeLevel(me?.gradeLevel);
-      setSubjectId(me?.subjectId);
       setDifficulty(3);
       setAnalysis("");
       setStemBlocks(emptyStem());
@@ -101,6 +95,11 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
     }
     setError(null);
   }, [initialQuestion, defaultType, me]);
+
+  const teacherGradeLevel = me?.gradeLevel;
+  const teacherSubjectId = me?.subjectId;
+  const teacherGradeLabel = GRADE_LEVELS.find((gl) => gl.value === teacherGradeLevel)?.label || "未设置年级";
+  const teacherSubjectLabel = SUBJECTS.find((sub) => sub.id === teacherSubjectId)?.name || "未设置学科";
 
   const handleSave = () => {
     setError(null);
@@ -137,8 +136,8 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
         options: finalOptions,
         answerKey,
         defaultScore: Math.max(1, Math.floor(defaultScore)),
-        gradeLevel,
-        subjectId,
+        gradeLevel: initialQuestion?.gradeLevel ?? teacherGradeLevel,
+        subjectId: teacherSubjectId,
         analysis,
         difficulty,
       });
@@ -237,31 +236,15 @@ export default function QuestionEditor({ initialQuestion, defaultType = "single"
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <div className="grid gap-1">
               <div className="text-xs font-medium text-zinc-700">年级</div>
-              <Select
-                value={gradeLevel ? String(gradeLevel) : ""}
-                onChange={(e) => setGradeLevel(e.target.value ? Number(e.target.value) : undefined)}
-              >
-                <option value="">请选择年级</option>
-                {GRADE_LEVELS.map((gl) => (
-                  <option key={gl.value} value={gl.value}>
-                    {gl.label}
-                  </option>
-                ))}
-              </Select>
+              <div className="flex h-10 items-center rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-700">
+                {initialQuestion?.gradeLevel ? GRADE_LEVELS.find((gl) => gl.value === initialQuestion.gradeLevel)?.label : teacherGradeLabel}
+              </div>
             </div>
             <div className="grid gap-1">
               <div className="text-xs font-medium text-zinc-700">学科</div>
-              <Select
-                value={subjectId || ""}
-                onChange={(e) => setSubjectId(e.target.value || undefined)}
-              >
-                <option value="">请选择学科</option>
-                {SUBJECTS.map((sub) => (
-                  <option key={sub.id} value={sub.id}>
-                    {sub.name}
-                  </option>
-                ))}
-              </Select>
+              <div className="flex h-10 items-center rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-700">
+                {teacherSubjectLabel}
+              </div>
             </div>
             <div className="grid gap-1">
               <div className="text-xs font-medium text-zinc-700">默认分值</div>

@@ -118,7 +118,7 @@ export default function UserImportModal({ isOpen, onClose, role, onSuccess }: Us
           const u: Partial<User> = {
             role,
             schoolNo: String(row[0] || ""),
-            password: String(row[1] || "123456"),
+            password: String(row[1] || "OexTest#2026!A1"),
             displayName: String(row[2] || ""),
             age: row[3] ? Number(row[3]) : undefined,
             gender,

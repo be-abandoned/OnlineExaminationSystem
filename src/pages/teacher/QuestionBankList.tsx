@@ -1,21 +1,25 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, Search, Pencil, Trash2, Upload } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Select from "@/components/ui/Select";
 import Tag from "@/components/ui/Tag";
+import Modal from "@/components/ui/Modal";
 import { Card } from "@/components/ui/Card";
-import { GRADE_LEVELS, SUBJECTS, QUESTION_TYPE_LABELS, type Question, type QuestionType, type StemBlock } from "@/types/domain";
+import { GRADE_LEVELS, SUBJECTS, QUESTION_TYPE_LABELS, type QuestionType, type StemBlock } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 import * as XLSX from "xlsx";
 import {
   teacherDeleteQuestionRemote,
   teacherDeleteQuestionsRemote,
-  teacherUpsertQuestionRemote,
+  teacherListQuestionsRemote,
+  teacherUpsertQuestionsRemote,
 } from "@/utils/remoteApi";
 import { useTeacherQuestionsQuery } from "@/hooks/domain/useTeacherQuestionsQuery";
-import { invalidateByPrefix } from "@/lib/query/invalidate";
+import { invalidateByPrefix, removeByResource } from "@/lib/query/invalidate";
+import { queryClient } from "@/lib/query/queryClient";
+import { createQueryKey } from "@/lib/query/queryKey";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
 const TEMPLATE_HEADERS = [
@@ -35,6 +39,14 @@ const TEMPLATE_HEADERS = [
   "图片",
 ];
 
+const EMPTY_IMPORT_STATS: Record<QuestionType, number> = {
+  single: 0,
+  multiple: 0,
+  true_false: 0,
+  blank: 0,
+  short: 0,
+};
+
 function toQuestionType(raw: string): QuestionType | null {
   const normalized = raw.trim();
   if (!normalized) return null;
@@ -46,6 +58,46 @@ function toQuestionType(raw: string): QuestionType | null {
   return null;
 }
 
+function normalizeForDuplicate(value: unknown): unknown {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(normalizeForDuplicate);
+  if (value && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = normalizeForDuplicate((value as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return value ?? null;
+}
+
+function createQuestionDuplicateKey(question: {
+  type: QuestionType;
+  stem: StemBlock[];
+  options?: { id: string; text: string }[];
+  answerKey: unknown;
+  defaultScore: number;
+  gradeLevel?: number;
+  subjectId?: string;
+  analysis?: string;
+  difficulty?: number;
+}) {
+  return JSON.stringify(
+    normalizeForDuplicate({
+      type: question.type,
+      stem: question.stem,
+      options: question.options || [],
+      answerKey: question.answerKey,
+      defaultScore: question.defaultScore,
+      gradeLevel: question.gradeLevel ?? null,
+      subjectId: question.subjectId ?? null,
+      analysis: question.analysis || "",
+      difficulty: question.difficulty ?? null,
+    }),
+  );
+}
+
 export default function QuestionBankList() {
   const navigate = useNavigate();
   const me = useAuthStore((s) => s.getMe());
@@ -53,23 +105,71 @@ export default function QuestionBankList() {
   const [filterId, setFilterId] = useState("");
   const [filterType, setFilterType] = useState<"all" | QuestionType>("all");
   const [filterGrade, setFilterGrade] = useState<number | "all">("all");
-  const [filterSubject, setFilterSubject] = useState<string | "all">("all");
   const [importing, setImporting] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importResult, setImportResult] = useState<string>("");
+  const [importError, setImportError] = useState<string>("");
+  const [importProcessedCount, setImportProcessedCount] = useState(0);
+  const [importTotalCount, setImportTotalCount] = useState(0);
+  const [importSuccessCount, setImportSuccessCount] = useState(0);
+  const [importFailureCount, setImportFailureCount] = useState(0);
+  const [importExistingCount, setImportExistingCount] = useState(0);
+  const [importExistingReasons, setImportExistingReasons] = useState<string[]>([]);
+  const [importStats, setImportStats] = useState<Record<QuestionType, number>>(EMPTY_IMPORT_STATS);
   const [importMenuOpen, setImportMenuOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [visibleQuestions, setVisibleQuestions] = useState<typeof questions>([]);
+  const [refreshingList, setRefreshingList] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ mode: "single" | "batch"; ids: string[] } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { data: questions = [], isLoading, isRefreshing, error } = useTeacherQuestionsQuery(me?.id);
 
-  const handleBatchDelete = async () => {
+  useEffect(() => {
+    setVisibleQuestions(questions);
+  }, [questions]);
+
+  const refreshQuestions = async () => {
     if (!me) return;
-    if (selectedIds.size === 0) return;
-    if (!window.confirm(`确定要删除选中的 ${selectedIds.size} 道题目吗？`)) return;
+    setRefreshingList(true);
     try {
-      await teacherDeleteQuestionsRemote(me.id, Array.from(selectedIds));
+      removeByResource("teacher", me.id, "questions");
+      const latestQuestions = await teacherListQuestionsRemote(me.id);
+      queryClient.setQueryData(createQueryKey("teacher", me.id, "questions", {}), latestQuestions);
       invalidateByPrefix("teacher", me.id, ["questions"]);
-      setSelectedIds(new Set());
+      setVisibleQuestions(latestQuestions);
+    } finally {
+      setRefreshingList(false);
+    }
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedIds.size === 0) return;
+    setDeleteError(null);
+    setDeleteConfirm({ mode: "batch", ids: Array.from(selectedIds) });
+  };
+
+  const confirmDelete = async () => {
+    if (!me || !deleteConfirm || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      if (deleteConfirm.mode === "single") {
+        await teacherDeleteQuestionRemote(me.id, deleteConfirm.ids[0]);
+      } else {
+        await teacherDeleteQuestionsRemote(me.id, deleteConfirm.ids);
+      }
+      await refreshQuestions();
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        deleteConfirm.ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      setDeleteConfirm(null);
     } catch (error) {
-      console.error("Failed to delete questions", error);
+      setDeleteError(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -88,20 +188,9 @@ export default function QuestionBankList() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!me) return;
-    if (!window.confirm("确定要删除这道题目吗？")) return;
-    try {
-      await teacherDeleteQuestionRemote(me.id, id);
-      invalidateByPrefix("teacher", me.id, ["questions"]);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    } catch (error) {
-      console.error("Failed to delete question", error);
-    }
+  const handleDelete = (id: string) => {
+    setDeleteError(null);
+    setDeleteConfirm({ mode: "single", ids: [id] });
   };
 
   const handleDownloadTemplate = () => {
@@ -130,7 +219,16 @@ export default function QuestionBankList() {
   const handleImportFile = async (file: File) => {
     if (!me) return;
     setImporting(true);
+    setImportDialogOpen(true);
     setImportResult("");
+    setImportError("");
+    setImportProcessedCount(0);
+    setImportTotalCount(0);
+    setImportSuccessCount(0);
+    setImportFailureCount(0);
+    setImportExistingCount(0);
+    setImportExistingReasons([]);
+    setImportStats({ ...EMPTY_IMPORT_STATS });
     try {
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: "array" });
@@ -146,7 +244,14 @@ export default function QuestionBankList() {
       if (missing.length > 0) throw new Error(`模板表头不完整: ${missing.join("、")}`);
 
       let successCount = 0;
+      let existingCount = 0;
+      const pendingQuestions: Parameters<typeof teacherUpsertQuestionsRemote>[1] = [];
       const errors: string[] = [];
+      const existingReasons: string[] = [];
+      const duplicateKeys = new Set(questions.map(createQuestionDuplicateKey));
+      const stats: Record<QuestionType, number> = { ...EMPTY_IMPORT_STATS };
+      const importRows = rows.slice(1);
+      setImportTotalCount(importRows.length);
 
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i] || [];
@@ -172,13 +277,7 @@ export default function QuestionBankList() {
         const imageRaw = getCell("图片");
 
         try {
-          const gradeByLabel = GRADE_LEVELS.find((g) => g.label === gradeRaw)?.value;
-          const gradeByNumber = Number.isFinite(Number(gradeRaw)) ? Number(gradeRaw) : undefined;
-          const gradeLevel = gradeByLabel ?? gradeByNumber ?? me.gradeLevel;
-
-          const subjectByName = SUBJECTS.find((s) => s.name === subjectRaw)?.id;
-          const subjectById = SUBJECTS.find((s) => s.id === subjectRaw)?.id;
-          const subjectId = subjectByName ?? subjectById ?? me.subjectId;
+          const gradeLevel = me.gradeLevel;
 
           const type = toQuestionType(typeRaw);
           if (!type) throw new Error("题型无效");
@@ -229,32 +328,58 @@ export default function QuestionBankList() {
             stem.push({ type: "image", url: imageRaw });
           }
 
-          await teacherUpsertQuestionRemote(me.id, {
+          const candidate = {
             type,
             stem,
             options,
             answerKey,
             defaultScore,
             gradeLevel,
-            subjectId,
             analysis: analysisRaw,
             difficulty,
-          });
+          };
+          const duplicateKey = createQuestionDuplicateKey(candidate);
+          if (duplicateKeys.has(duplicateKey)) {
+            existingCount++;
+            existingReasons.push(`第 ${lineNo} 行：已存在`);
+            setImportExistingCount(existingCount);
+            setImportExistingReasons(existingReasons.slice(0, 5));
+            continue;
+          }
+
+          pendingQuestions.push(candidate);
+          duplicateKeys.add(duplicateKey);
           successCount++;
+          stats[type] += 1;
+          setImportSuccessCount(successCount);
+          setImportStats({ ...stats });
         } catch (e) {
           const msg = e instanceof Error ? e.message : "未知错误";
           errors.push(`第 ${lineNo} 行：${msg}`);
+          setImportFailureCount(errors.length);
+        } finally {
+          setImportProcessedCount(i);
         }
       }
 
-      invalidateByPrefix("teacher", me.id, ["questions"]);
+      if (pendingQuestions.length > 0) {
+        await teacherUpsertQuestionsRemote(me.id, pendingQuestions);
+      }
+      setImportProcessedCount(importRows.length);
+      await refreshQuestions();
+      setImportStats({ ...stats });
+      setImportSuccessCount(successCount);
+      setImportFailureCount(errors.length);
+      setImportExistingCount(existingCount);
+      setImportExistingReasons(existingReasons.slice(0, 5));
+      const existingText = existingCount > 0 ? `，已存在 ${existingCount} 条` : "";
       if (errors.length > 0) {
-        setImportResult(`导入完成：成功 ${successCount} 条，失败 ${errors.length} 条。${errors.slice(0, 3).join("；")}`);
+        setImportResult(`导入完成：成功 ${successCount} 条${existingText}，失败 ${errors.length} 条。${[...existingReasons.slice(0, 3), ...errors.slice(0, 3)].join("；")}`);
       } else {
-        setImportResult(`导入完成：成功 ${successCount} 条。`);
+        setImportResult(`导入完成：成功 ${successCount} 条${existingText}。${existingReasons.slice(0, 3).join("；")}`);
       }
     } catch (e) {
-      setImportResult(e instanceof Error ? `导入失败：${e.message}` : "导入失败");
+      setImportError(e instanceof Error ? `导入失败：${e.message}` : "导入失败");
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -263,19 +388,18 @@ export default function QuestionBankList() {
 
   if (!me) return null;
 
-  if (isLoading && questions.length === 0) {
+  if (isLoading && visibleQuestions.length === 0) {
     return <TableSkeleton title="题库管理" columns={6} rows={6} />;
   }
 
-  if (error && questions.length === 0) {
+  if (error && visibleQuestions.length === 0) {
     return <Card className="px-4 py-10 text-center text-sm text-red-600">加载题库失败</Card>;
   }
 
-  const filteredQuestions = questions.filter((q) => {
+  const filteredQuestions = visibleQuestions.filter((q) => {
     if (filterId && !q.id.toLowerCase().includes(filterId.toLowerCase())) return false;
     if (filterType !== "all" && q.type !== filterType) return false;
     if (filterGrade !== "all" && q.gradeLevel !== filterGrade) return false;
-    if (filterSubject !== "all" && q.subjectId !== filterSubject) return false;
     return true;
   });
 
@@ -291,7 +415,7 @@ export default function QuestionBankList() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-zinc-900">题库管理</h1>
-          {isRefreshing ? <span className="text-xs text-zinc-500">正在刷新...</span> : null}
+          {isRefreshing || refreshingList ? <span className="text-xs text-zinc-500">正在刷新...</span> : null}
         </div>
         <div className="flex items-center gap-2">
           {selectedIds.size > 0 && (
@@ -346,8 +470,6 @@ export default function QuestionBankList() {
           </Button>
         </div>
       </div>
-      {importing ? <div className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">导入中...</div> : null}
-      {importResult ? <div className="rounded-md bg-zinc-100 px-3 py-2 text-sm text-zinc-700">{importResult}</div> : null}
 
       <Card className="p-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-end flex-wrap">
@@ -378,20 +500,6 @@ export default function QuestionBankList() {
             </Select>
           </div>
           <div className="w-full md:w-32">
-            <label className="mb-1 block text-xs font-medium text-zinc-500">学科</label>
-            <Select
-              value={filterSubject}
-              onChange={(e) => setFilterSubject(e.target.value)}
-            >
-              <option value="all">全部学科</option>
-              {SUBJECTS.map((sub) => (
-                <option key={sub.id} value={sub.id}>
-                  {sub.name}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div className="w-full md:w-32">
             <label className="mb-1 block text-xs font-medium text-zinc-500">题型</label>
             <Select
               value={filterType}
@@ -410,7 +518,6 @@ export default function QuestionBankList() {
               setFilterId(""); 
               setFilterType("all");
               setFilterGrade("all");
-              setFilterSubject("all");
             }}>
               重置
             </Button>
@@ -515,6 +622,91 @@ export default function QuestionBankList() {
           </div>
         </div>
       </div>
+      <Modal
+        isOpen={Boolean(deleteConfirm)}
+        onClose={() => {
+          if (!deleting) setDeleteConfirm(null);
+        }}
+        title="确认删除题目"
+        width="max-w-lg"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={deleting} onClick={() => setDeleteConfirm(null)}>
+              取消
+            </Button>
+            <Button variant="danger" disabled={deleting || refreshingList} onClick={() => void confirmDelete()}>
+              {deleting || refreshingList ? "处理中..." : "确认删除"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="grid gap-4 text-sm text-zinc-700">
+          <div className="rounded-md bg-red-50 px-3 py-3 text-red-700">
+            {deleteConfirm?.mode === "batch"
+              ? `确定要删除选中的 ${deleteConfirm.ids.length} 道题目吗？`
+              : "确定要删除这道题目吗？"}
+          </div>
+          <div className="text-zinc-500">删除后不可恢复，请确认后再操作。</div>
+          {deleteError ? <div className="rounded-md bg-red-50 px-3 py-2 text-red-600">{deleteError}</div> : null}
+        </div>
+      </Modal>
+      <Modal
+        isOpen={importDialogOpen}
+        onClose={() => {
+          if (!importing) setImportDialogOpen(false);
+        }}
+        title={importing ? "导入中" : importError ? "导入失败" : "导入完成"}
+        width="max-w-md"
+        footer={
+          !importing ? (
+            <div className="flex justify-end">
+              <Button variant="secondary" onClick={async () => {
+                await refreshQuestions();
+                setImportDialogOpen(false);
+              }}>
+                关闭
+              </Button>
+            </div>
+          ) : null
+        }
+      >
+        <div className="grid gap-4 text-sm text-zinc-700">
+          {importing ? (
+            <>
+              <div>正在导入题目：{importProcessedCount} / {importTotalCount}</div>
+              <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
+                <div
+                  className="h-full rounded-full bg-blue-600 transition-all"
+                  style={{ width: `${importTotalCount > 0 ? Math.round((importProcessedCount / importTotalCount) * 100) : 0}%` }}
+                />
+              </div>
+            </>
+          ) : importError ? (
+            <div className="rounded-md bg-red-50 px-3 py-2 text-red-700">{importError}</div>
+          ) : (
+            <>
+              <div className="rounded-md bg-green-50 px-3 py-2 text-green-700">{importResult || "导入完成"}</div>
+              <div className="grid gap-2">
+                <div className="font-medium text-zinc-900">题型统计</div>
+                {Object.entries(QUESTION_TYPE_LABELS).map(([type, label]) => (
+                  <div key={type} className="flex items-center justify-between rounded-md bg-zinc-50 px-3 py-2">
+                    <span>{label}</span>
+                    <span className="font-semibold text-zinc-900">{importStats[type as QuestionType]} 道</span>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs text-zinc-500">成功 {importSuccessCount} 条，已存在 {importExistingCount} 条，失败 {importFailureCount} 条，题目列表已刷新。</div>
+              {importExistingReasons.length > 0 ? (
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {importExistingReasons.map((reason) => (
+                    <div key={reason}>{reason}</div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import AppShell from "@/components/layout/AppShell";
-import { BookOpenText, ClipboardCheck, FileText, MessageSquare, Users, User } from "lucide-react";
+import { BookOpenText, ClipboardCheck, FileText, MessageSquare, User } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { usePrefetchTeacherExams } from "@/hooks/domain/useTeacherExamsQuery";
 import { usePrefetchTeacherDashboard } from "@/hooks/domain/useTeacherDashboardQuery";
@@ -24,6 +24,7 @@ export default function TeacherLayout() {
           onMouseEnter: () => prefetchTeacherDashboard(me?.id),
         },
         {
+          to: "/teacher/questions",
           label: "题库管理",
           icon: <BookOpenText className="h-4 w-4" />,
           onMouseEnter: () => prefetchTeacherQuestions(me?.id),

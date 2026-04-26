@@ -3,15 +3,19 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Tag from "@/components/ui/Tag";
+import { EXAM_STATUS_LABELS } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 import { useTeacherDashboardQuery } from "@/hooks/domain/useTeacherDashboardQuery";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
+const EMPTY_EXAMS: { id: string; title: string; status: string; updatedAt: string }[] = [];
+
 export default function TeacherDashboard() {
   const me = useAuthStore((s) => s.getMe());
   const { data, isLoading, isRefreshing, error } = useTeacherDashboardQuery(me?.id);
-  const exams = data?.exams || [];
+  const exams = data?.exams ?? EMPTY_EXAMS;
   const pendingGrading = data?.pendingGrading || 0;
+  const recentExams = useMemo(() => exams.slice(0, 6), [exams]);
 
   if (!me) return null;
   if (isLoading && !data) {
@@ -22,7 +26,6 @@ export default function TeacherDashboard() {
   }
   const published = exams.filter((e) => e.status === "published").length;
   const drafts = exams.filter((e) => e.status === "draft").length;
-  const recentExams = useMemo(() => exams.slice(0, 6), [exams]);
 
   return (
     <div className="grid gap-4">
@@ -77,7 +80,7 @@ export default function TeacherDashboard() {
                   <div className="text-xs text-zinc-500">更新于 {new Date(e.updatedAt).toLocaleString()}</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Tag tone={e.status === "published" ? "green" : e.status === "draft" ? "zinc" : "amber"}>{e.status}</Tag>
+                  <Tag tone={e.status === "published" ? "green" : e.status === "draft" ? "zinc" : "amber"}>{EXAM_STATUS_LABELS[e.status as keyof typeof EXAM_STATUS_LABELS] ?? e.status}</Tag>
                   <Link to={`/teacher/exams/${e.id}/edit`}>
                     <Button variant="secondary">编辑</Button>
                   </Link>

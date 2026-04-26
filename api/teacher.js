@@ -1,6 +1,7 @@
 import { assertTeacher, getSupabaseAdminClient } from "../server/supabase.js";
 
-function normalizeQuestionInput(input, teacherId) {
+function normalizeQuestionInput(input, teacher) {
+  const teacherId = typeof teacher === "string" ? teacher : teacher.id;
   return {
     id: input.id || crypto.randomUUID(),
     teacher_id: teacherId,
@@ -9,8 +10,8 @@ function normalizeQuestionInput(input, teacherId) {
     options: input.options ?? null,
     answer_key: input.answerKey ?? null,
     default_score: input.defaultScore,
-    grade_level: input.gradeLevel ?? null,
-    subject_id: input.subjectId ?? null,
+    grade_level: typeof teacher === "string" ? input.gradeLevel ?? null : teacher.grade_level ?? input.gradeLevel ?? null,
+    subject_id: typeof teacher === "string" ? input.subjectId ?? null : teacher.subject_id ?? null,
     analysis: input.analysis ?? null,
     difficulty: input.difficulty ?? null,
     updated_at: new Date().toISOString(),
@@ -18,9 +19,9 @@ function normalizeQuestionInput(input, teacherId) {
   };
 }
 
-function normalizeExamInput(input, teacherId) {
+function normalizeExamInput(input, teacherId, options = {}) {
   const now = new Date().toISOString();
-  return {
+  const row = {
     id: input.id || crypto.randomUUID(),
     teacher_id: teacherId,
     title: input.title,
@@ -37,10 +38,53 @@ function normalizeExamInput(input, teacherId) {
     updated_at: now,
     ...(input.id ? {} : { created_at: now }),
   };
+  if (options.includeQuestionTypeSettings) {
+    row.question_type_settings = input.questionTypeSettings ?? null;
+  }
+  return row;
+}
+
+async function upsertExamWithSchemaFallback(supabase, exam, teacherId) {
+  const row = normalizeExamInput(exam, teacherId, { includeQuestionTypeSettings: true });
+  const { error } = await supabase.from("exams").upsert(row, { onConflict: "id" });
+  if (!error) return row.id;
+  if (!String(error.message || "").includes("question_type_settings")) {
+    throw new Error(error.message);
+  }
+  const fallbackRow = normalizeExamInput(exam, teacherId);
+  const { error: fallbackError } = await supabase.from("exams").upsert(fallbackRow, { onConflict: "id" });
+  if (fallbackError) throw new Error(fallbackError.message);
+  return fallbackRow.id;
 }
 
 function canAccessExam(exam, teacherId) {
   return exam && exam.teacher_id === teacherId;
+}
+
+function normalizePresetSettings(settings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const read = (type) => ({
+    count: Number(source[type]?.count || 0),
+    score: Number(source[type]?.score || 0),
+  });
+  return {
+    single: read("single"),
+    multiple: read("multiple"),
+    true_false: read("true_false"),
+    blank: read("blank"),
+    short: read("short"),
+  };
+}
+
+function normalizeQuestionTypePresetInput(input) {
+  const now = new Date().toISOString();
+  return {
+    id: input.id || crypto.randomUUID(),
+    name: String(input.name || "").trim(),
+    settings: normalizePresetSettings(input.settings),
+    updated_at: now,
+    ...(input.id ? {} : { created_at: now }),
+  };
 }
 
 export default async function handler(req, res) {
@@ -48,26 +92,60 @@ export default async function handler(req, res) {
   const { resource } = req.query || {};
 
   try {
+    if (resource === "profile") {
+      const { teacherId, patch } = req.body || {};
+      const teacher = await assertTeacher(supabase, teacherId);
+      if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+      const row = {
+        display_name: String(patch?.displayName || "").trim() || undefined,
+        avatar_url: patch?.avatarUrl ?? null,
+        grade_level: patch?.gradeLevel ?? null,
+        subject_id: patch?.subjectId ?? null,
+      };
+      Object.keys(row).forEach((key) => row[key] === undefined && delete row[key]);
+      const { data, error } = await supabase
+        .from("users")
+        .update(row)
+        .eq("id", teacher.id)
+        .select("*")
+        .single();
+      if (error) throw new Error(error.message);
+      return res.status(200).json({ user: data });
+    }
+
     if (resource === "questions") {
       if (req.method === "GET") {
         const { teacherId } = req.query || {};
-        await assertTeacher(supabase, teacherId);
-        const { data, error } = await supabase
+        const teacher = await assertTeacher(supabase, teacherId);
+        let query = supabase
           .from("questions")
           .select("*")
-          .eq("teacher_id", teacherId)
-          .order("updated_at", { ascending: false });
+          .eq("teacher_id", teacherId);
+        if (teacher.subject_id) {
+          query = query.eq("subject_id", teacher.subject_id);
+        }
+        const { data, error } = await query.order("updated_at", { ascending: false });
         if (error) throw new Error(error.message);
         return res.status(200).json({ questions: data || [] });
       }
 
       if (req.method === "POST") {
-        const { teacherId, question } = req.body || {};
-        await assertTeacher(supabase, teacherId);
+        const { teacherId, question, questions } = req.body || {};
+        const teacher = await assertTeacher(supabase, teacherId);
+        if (Array.isArray(questions)) {
+          if (questions.length === 0) return res.status(400).json({ error: "题目列表为空" });
+          const rows = questions.map((item) => {
+            if (!item || !item.type || !item.stem) throw new Error("题目参数不完整");
+            return normalizeQuestionInput(item, teacher);
+          });
+          const { error } = await supabase.from("questions").upsert(rows, { onConflict: "id" });
+          if (error) throw new Error(error.message);
+          return res.status(200).json({ ok: true, ids: rows.map((row) => row.id) });
+        }
         if (!question || !question.type || !question.stem) {
           return res.status(400).json({ error: "题目参数不完整" });
         }
-        const row = normalizeQuestionInput(question, teacherId);
+        const row = normalizeQuestionInput(question, teacher);
         const { error } = await supabase.from("questions").upsert(row, { onConflict: "id" });
         if (error) throw new Error(error.message);
         return res.status(200).json({ ok: true, id: row.id });
@@ -134,10 +212,8 @@ export default async function handler(req, res) {
         const { teacherId, exam } = req.body || {};
         await assertTeacher(supabase, teacherId);
         if (!exam || !exam.title) return res.status(400).json({ error: "缺少试卷参数" });
-        const row = normalizeExamInput(exam, teacherId);
-        const { error } = await supabase.from("exams").upsert(row, { onConflict: "id" });
-        if (error) throw new Error(error.message);
-        return res.status(200).json({ ok: true, id: row.id });
+        const id = await upsertExamWithSchemaFallback(supabase, exam, teacherId);
+        return res.status(200).json({ ok: true, id });
       }
 
       if (req.method === "DELETE") {
@@ -149,6 +225,42 @@ export default async function handler(req, res) {
           .delete()
           .eq("id", examId)
           .eq("teacher_id", teacherId);
+        if (error) throw new Error(error.message);
+        return res.status(200).json({ ok: true });
+      }
+    }
+
+    if (resource === "question-type-presets") {
+      const { teacherId } = req.method === "GET" ? (req.query || {}) : (req.body || {});
+      await assertTeacher(supabase, teacherId);
+
+      if (req.method === "GET") {
+        const { data, error } = await supabase
+          .from("question_type_presets")
+          .select("*")
+          .order("updated_at", { ascending: false });
+        if (error) throw new Error(error.message);
+        return res.status(200).json({ presets: data || [] });
+      }
+
+      if (req.method === "POST") {
+        const { preset } = req.body || {};
+        if (!preset || !String(preset.name || "").trim()) return res.status(400).json({ error: "请填写预设名称" });
+        const { count, error: countError } = await supabase
+          .from("question_type_presets")
+          .select("id", { count: "exact", head: true });
+        if (countError) throw new Error(countError.message);
+        if (!preset.id && Number(count || 0) >= 6) return res.status(400).json({ error: "最多只能保存六种题型预设" });
+        const row = normalizeQuestionTypePresetInput(preset);
+        const { error } = await supabase.from("question_type_presets").upsert(row, { onConflict: "id" });
+        if (error) throw new Error(error.message);
+        return res.status(200).json({ ok: true, id: row.id });
+      }
+
+      if (req.method === "DELETE") {
+        const { presetId } = req.body || {};
+        if (!presetId) return res.status(400).json({ error: "缺少 presetId" });
+        const { error } = await supabase.from("question_type_presets").delete().eq("id", presetId);
         if (error) throw new Error(error.message);
         return res.status(200).json({ ok: true });
       }
@@ -416,7 +528,29 @@ export default async function handler(req, res) {
           .order("school_no", { ascending: true });
         if (stuErr) throw new Error(stuErr.message);
 
-        return res.status(200).json({ sent: sent || [], students: students || [] });
+        let reads = [];
+        if ((sent || []).length > 0) {
+          const { data, error: readErr } = await supabase
+            .from("message_reads")
+            .select("message_id, student_id, read_at")
+            .in("message_id", (sent || []).map((m) => m.id));
+          if (readErr && !readErr.message.includes('message_reads')) throw new Error(readErr.message);
+          reads = data || [];
+        }
+
+        const readsByMessageId = new Map();
+        reads.forEach((item) => {
+          const arr = readsByMessageId.get(item.message_id) || [];
+          arr.push(item);
+          readsByMessageId.set(item.message_id, arr);
+        });
+
+        const sentWithReads = (sent || []).map((message) => ({
+          ...message,
+          reads: readsByMessageId.get(message.id) || [],
+        }));
+
+        return res.status(200).json({ sent: sentWithReads, students: students || [] });
       }
 
       if (req.method === "POST") {
@@ -432,6 +566,36 @@ export default async function handler(req, res) {
           created_at: new Date().toISOString(),
         };
         const { error } = await supabase.from("messages").insert(row);
+        if (error) throw new Error(error.message);
+        return res.status(200).json({ ok: true });
+      }
+
+      if (req.method === "PATCH") {
+        const { teacherId, messageId, title, content, target } = req.body || {};
+        await assertTeacher(supabase, teacherId);
+        if (!messageId || !content || !target) return res.status(400).json({ error: "参数不完整" });
+        const { error } = await supabase
+          .from("messages")
+          .update({
+            title: title || "公告",
+            content,
+            target,
+          })
+          .eq("id", messageId)
+          .eq("teacher_id", teacherId);
+        if (error) throw new Error(error.message);
+        return res.status(200).json({ ok: true });
+      }
+
+      if (req.method === "DELETE") {
+        const { teacherId, messageId } = req.body || {};
+        await assertTeacher(supabase, teacherId);
+        if (!messageId) return res.status(400).json({ error: "缺少 messageId" });
+        const { error } = await supabase
+          .from("messages")
+          .delete()
+          .eq("id", messageId)
+          .eq("teacher_id", teacherId);
         if (error) throw new Error(error.message);
         return res.status(200).json({ ok: true });
       }

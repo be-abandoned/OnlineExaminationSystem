@@ -5,6 +5,8 @@ import Input from "@/components/ui/Input";
 import Select from "@/components/ui/Select";
 import { useAuthStore } from "@/stores/authStore";
 import { GRADE_LEVELS, SUBJECTS } from "@/types/domain";
+import { teacherUpdateProfileRemote } from "@/utils/remoteApi";
+import { removeByResource } from "@/lib/query/invalidate";
 
 function imageUrl(prompt: string, size: string) {
   const encoded = encodeURIComponent(prompt);
@@ -20,6 +22,7 @@ export default function TeacherProfile() {
   const [subjectId, setSubjectId] = useState<string | undefined>(me?.subjectId);
   const [saving, setSaving] = useState(false);
   const [ok, setOk] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const avatars = useMemo(() => {
     return [
@@ -117,13 +120,15 @@ export default function TeacherProfile() {
           </div>
 
           {ok ? <div className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">已保存</div> : null}
+          {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
 
           <div>
             <Button
               disabled={saving}
-              onClick={() => {
+              onClick={async () => {
                 setSaving(true);
                 setOk(false);
+                setError(null);
                 try {
                   const payload = {
                     displayName: name.trim() || me.displayName,
@@ -131,8 +136,17 @@ export default function TeacherProfile() {
                     gradeLevel,
                     subjectId,
                   };
-                  updateProfile(payload);
+                  const saved = await teacherUpdateProfileRemote(me.id, payload);
+                  updateProfile({
+                    displayName: saved.displayName,
+                    avatarUrl: saved.avatarUrl,
+                    gradeLevel: saved.gradeLevel,
+                    subjectId: saved.subjectId,
+                  });
+                  removeByResource("teacher", me.id, "questions");
                   setOk(true);
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "保存失败");
                 } finally {
                   setSaving(false);
                 }

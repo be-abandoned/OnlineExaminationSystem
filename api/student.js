@@ -85,6 +85,12 @@ export default async function handler(req, res) {
         const { data: exam, error: examErr } = await supabase.from("exams").select("*").eq("id", examId).single();
         if (examErr || !exam || exam.status !== "published") return res.status(400).json({ error: "考试不可用" });
 
+        const now = Date.now();
+        const start = exam.start_at ? Date.parse(exam.start_at) : undefined;
+        const end = exam.end_at ? Date.parse(exam.end_at) : undefined;
+        if (start && now < start) return res.status(400).json({ error: "考试还未开始请耐心等待" });
+        if (end && now > end) return res.status(400).json({ error: "考试已结束" });
+
         const { data: allowed, error: allowErr } = await supabase
           .from("exam_assignments")
           .select("id")
@@ -115,13 +121,13 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: "已达到考试次数上限" });
         }
 
-        const now = new Date().toISOString();
+        const nowIso = new Date().toISOString();
         const attempt = {
           id: crypto.randomUUID(),
           exam_id: examId,
           student_id: studentId,
           status: "in_progress",
-          started_at: now,
+          started_at: nowIso,
           submitted_at: null,
           total_score: 0,
           score_published: false,
@@ -144,7 +150,7 @@ export default async function handler(req, res) {
             auto_score: 0,
             manual_score: 0,
             teacher_comment: null,
-            updated_at: now,
+            updated_at: nowIso,
           }));
           const { error: aaErr } = await supabase.from("attempt_answers").insert(aaRows);
           if (aaErr) throw new Error(aaErr.message);
@@ -269,29 +275,71 @@ export default async function handler(req, res) {
       }
     }
 
-    if (resource === "messages" && req.method === "GET") {
-      const { studentId } = req.query || {};
-      await assertStudent(supabase, studentId);
+    if (resource === "messages") {
+      if (req.method === "GET") {
+        const { studentId } = req.query || {};
+        await assertStudent(supabase, studentId);
 
-      const { data: messages, error } = await supabase.from("messages").select("*").order("created_at", { ascending: false });
-      if (error) throw new Error(error.message);
-      const visible = (messages || []).filter((m) => {
-        if (!m.target || !m.target.type) return false;
-        if (m.target.type === "all_students") return true;
-        if (m.target.type === "students" && Array.isArray(m.target.studentIds)) {
-          return m.target.studentIds.includes(studentId);
+        const { data: messages, error } = await supabase.from("messages").select("*").order("created_at", { ascending: false });
+        if (error) throw new Error(error.message);
+        const visible = (messages || []).filter((m) => {
+          if (!m.target || !m.target.type) return false;
+          if (m.target.type === "all_students") return true;
+          if (m.target.type === "students" && Array.isArray(m.target.studentIds)) {
+            return m.target.studentIds.includes(studentId);
+          }
+          return false;
+        });
+
+        const messageIds = visible.map((m) => m.id);
+        let reads = [];
+        if (messageIds.length > 0) {
+          const { data, error: readErr } = await supabase
+            .from("message_reads")
+            .select("message_id, read_at")
+            .eq("student_id", studentId)
+            .in("message_id", messageIds);
+          if (readErr && !readErr.message.includes('message_reads')) throw new Error(readErr.message);
+          reads = data || [];
         }
-        return false;
-      });
+        const readMap = new Map(reads.map((item) => [item.message_id, item.read_at]));
+        const visibleWithReadAt = visible.map((m) => ({ ...m, read_at: readMap.get(m.id) || null }));
 
-      const teacherIds = [...new Set(visible.map((m) => m.teacher_id).filter(Boolean))];
-      let teachers = [];
-      if (teacherIds.length > 0) {
-        const { data, error: tErr } = await supabase.from("users").select("*").in("id", teacherIds);
-        if (tErr) throw new Error(tErr.message);
-        teachers = data || [];
+        const teacherIds = [...new Set(visibleWithReadAt.map((m) => m.teacher_id).filter(Boolean))];
+        let teachers = [];
+        if (teacherIds.length > 0) {
+          const { data, error: tErr } = await supabase.from("users").select("*").in("id", teacherIds);
+          if (tErr) throw new Error(tErr.message);
+          teachers = data || [];
+        }
+        return res.status(200).json({ messages: visibleWithReadAt, teachers });
       }
-      return res.status(200).json({ messages: visible, teachers });
+
+      if (req.method === "POST") {
+        const { studentId, messageId } = req.body || {};
+        await assertStudent(supabase, studentId);
+        if (!messageId) return res.status(400).json({ error: "缺少 messageId" });
+
+        const { data: message, error: messageErr } = await supabase.from("messages").select("*").eq("id", messageId).single();
+        if (messageErr || !message) throw new Error(messageErr?.message || "公告不存在");
+
+        const visible = Boolean(
+          message.target && message.target.type && (
+            message.target.type === "all_students"
+            || (message.target.type === "students" && Array.isArray(message.target.studentIds) && message.target.studentIds.includes(studentId))
+          )
+        );
+        if (!visible) return res.status(403).json({ error: "无权操作该公告" });
+
+        const row = {
+          message_id: messageId,
+          student_id: studentId,
+          read_at: new Date().toISOString(),
+        };
+        const { error: upsertErr } = await supabase.from("message_reads").upsert(row, { onConflict: "message_id,student_id" });
+        if (upsertErr) throw new Error(upsertErr.message);
+        return res.status(200).json({ ok: true });
+      }
     }
 
     return res.status(405).json({ error: "Method Not Allowed" });

@@ -4,26 +4,59 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Tag from "@/components/ui/Tag";
+import Modal from "@/components/ui/Modal";
+import { EXAM_STATUS_LABELS } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 import { teacherDeleteExamRemote, teacherUpsertExamRemote } from "@/utils/remoteApi";
 import { useTeacherExamsQuery } from "@/hooks/domain/useTeacherExamsQuery";
+import { usePrefetchTeacherExamDetail } from "@/hooks/domain/useTeacherExamDetailQuery";
 import { invalidateByPrefix } from "@/lib/query/invalidate";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
+
+const EMPTY_EXAMS: { id: string; title: string; status: string; durationMinutes: number; updatedAt: string }[] = [];
+const EMPTY_COUNTS = new Map<string, number>();
 
 export default function TeacherExams() {
   const me = useAuthStore((s) => s.getMe());
   const navigate = useNavigate();
   const [q, setQ] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createTitle, setCreateTitle] = useState("新建试卷");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const prefetchTeacherExamDetail = usePrefetchTeacherExamDetail();
   const { data, isLoading, isRefreshing, error } = useTeacherExamsQuery(me?.id);
-  const exams = data?.exams || [];
-  const counts = data?.assignmentCounts || new Map();
+  const exams = data?.exams ?? EMPTY_EXAMS;
+  const counts = data?.assignmentCounts ?? EMPTY_COUNTS;
 
   const items = useMemo(() => {
     const all = exams;
     const s = q.trim();
     if (!s) return all;
-    return all.filter((e) => e.title.includes(s) || e.status.includes(s));
+    return all.filter((e) => e.title.includes(s) || EXAM_STATUS_LABELS[e.status as keyof typeof EXAM_STATUS_LABELS]?.includes(s));
   }, [exams, q]);
+
+  const createExam = async () => {
+    if (!me || creating) return;
+    const title = createTitle.trim();
+    if (!title) {
+      setCreateError("请输入试卷标题");
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const exam = await teacherUpsertExamRemote(me.id, { title, durationMinutes: 30 });
+      invalidateByPrefix("teacher", me.id, ["exams", "dashboard"]);
+      setCreateOpen(false);
+      setCreateTitle("新建试卷");
+      navigate(`/teacher/exams/${exam.id}/edit`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "新建试卷失败");
+    } finally {
+      setCreating(false);
+    }
+  };
 
   if (!me) return null;
 
@@ -52,12 +85,10 @@ export default function TeacherExams() {
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题/状态" />
             </div>
             <Button
-              onClick={async () => {
-                const title = window.prompt("请输入试卷标题", "新建试卷");
-                if (!title) return;
-                const exam = await teacherUpsertExamRemote(me.id, { title, durationMinutes: 30 });
-                invalidateByPrefix("teacher", me.id, ["exams", "dashboard"]);
-                navigate(`/teacher/exams/${exam.id}/edit`);
+              onClick={() => {
+                setCreateTitle("新建试卷");
+                setCreateError(null);
+                setCreateOpen(true);
               }}
             >
               新建试卷
@@ -85,13 +116,18 @@ export default function TeacherExams() {
                     <div className="text-xs text-zinc-500">更新于 {new Date(e.updatedAt).toLocaleString()}</div>
                   </td>
                   <td className="border-b border-zinc-100 px-3 py-2">
-                    <Tag tone={e.status === "published" ? "green" : e.status === "draft" ? "zinc" : "amber"}>{e.status}</Tag>
+                    <Tag tone={e.status === "published" ? "green" : e.status === "draft" ? "zinc" : "amber"}>{EXAM_STATUS_LABELS[e.status as keyof typeof EXAM_STATUS_LABELS] ?? e.status}</Tag>
                   </td>
                   <td className="border-b border-zinc-100 px-3 py-2 text-zinc-700">{e.durationMinutes} 分钟</td>
                   <td className="border-b border-zinc-100 px-3 py-2 text-zinc-700">{counts.get(e.id) ?? 0}</td>
                   <td className="border-b border-zinc-100 px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <Link to={`/teacher/exams/${e.id}/edit`}>
+                      <Link
+                        to={`/teacher/exams/${e.id}/edit`}
+                        onMouseEnter={() => prefetchTeacherExamDetail(me?.id, e.id)}
+                        onFocus={() => prefetchTeacherExamDetail(me?.id, e.id)}
+                        onClick={() => prefetchTeacherExamDetail(me?.id, e.id)}
+                      >
                         <Button variant="secondary">编辑</Button>
                       </Link>
                       <Link to={`/teacher/exams/${e.id}/grading`}>
@@ -123,6 +159,39 @@ export default function TeacherExams() {
           </table>
         </div>
       </CardContent>
+      <Modal
+        isOpen={createOpen}
+        onClose={() => {
+          if (!creating) setCreateOpen(false);
+        }}
+        title="新建试卷"
+        width="max-w-md"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={creating} onClick={() => setCreateOpen(false)}>
+              取消
+            </Button>
+            <Button disabled={creating} onClick={createExam}>
+              {creating ? "创建中..." : "创建"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="grid gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-zinc-500">试卷标题</label>
+            <Input
+              value={createTitle}
+              onChange={(e) => setCreateTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") createExam();
+              }}
+              placeholder="请输入试卷标题"
+            />
+          </div>
+          {createError ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{createError}</div> : null}
+        </div>
+      </Modal>
     </Card>
   );
 }

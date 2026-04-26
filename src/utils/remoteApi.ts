@@ -1,4 +1,4 @@
-import type { Attempt, AttemptAnswer, Class, Exam, ExamQuestion, Message, Question, User, UserRole } from "@/types/domain";
+import type { Attempt, AttemptAnswer, Class, Exam, ExamQuestion, ExamQuestionTypeSettings, Message, Question, QuestionType, QuestionTypePreset, User, UserRole } from "@/types/domain";
 import { supabase } from "@/lib/supabase";
 import { buildAuthEmail } from "@/utils/authIdentity";
 
@@ -207,6 +207,17 @@ function mapQuestionFromApi(q: any): Question {
   };
 }
 
+export async function teacherUpdateProfileRemote(
+  teacherId: string,
+  patch: { displayName?: string; avatarUrl?: string; gradeLevel?: number; subjectId?: string },
+): Promise<User> {
+  const data = await requestJson("/api/teacher?resource=profile", {
+    method: "POST",
+    body: JSON.stringify({ teacherId, patch }),
+  });
+  return mapUserFromApi(data.user);
+}
+
 export async function teacherListQuestionsRemote(teacherId: string): Promise<Question[]> {
   const data = await requestJson(`/api/teacher?resource=questions&teacherId=${encodeURIComponent(teacherId)}`);
   return (data.questions || []).map(mapQuestionFromApi);
@@ -216,6 +227,13 @@ export async function teacherUpsertQuestionRemote(teacherId: string, question: P
   await requestJson("/api/teacher?resource=questions", {
     method: "POST",
     body: JSON.stringify({ teacherId, question }),
+  });
+}
+
+export async function teacherUpsertQuestionsRemote(teacherId: string, questions: Partial<Question>[]) {
+  await requestJson("/api/teacher?resource=questions", {
+    method: "POST",
+    body: JSON.stringify({ teacherId, questions }),
   });
 }
 
@@ -233,6 +251,34 @@ export async function teacherDeleteQuestionsRemote(teacherId: string, questionId
   });
 }
 
+function mapExamQuestionTypeSettingsFromApi(value: unknown): ExamQuestionTypeSettings | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Partial<Record<QuestionType, { count?: unknown; score?: unknown }>>;
+  return {
+    single: { count: Number(source.single?.count || 0), score: Number(source.single?.score || 0) },
+    multiple: { count: Number(source.multiple?.count || 0), score: Number(source.multiple?.score || 0) },
+    true_false: { count: Number(source.true_false?.count || 0), score: Number(source.true_false?.score || 0) },
+    blank: { count: Number(source.blank?.count || 0), score: Number(source.blank?.score || 0) },
+    short: { count: Number(source.short?.count || 0), score: Number(source.short?.score || 0) },
+  };
+}
+
+function mapQuestionTypePresetFromApi(p: any): QuestionTypePreset {
+  return {
+    id: p.id,
+    name: p.name,
+    settings: mapExamQuestionTypeSettingsFromApi(p.settings) ?? {
+      single: { count: 0, score: 0 },
+      multiple: { count: 0, score: 0 },
+      true_false: { count: 0, score: 0 },
+      blank: { count: 0, score: 0 },
+      short: { count: 0, score: 0 },
+    },
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+  };
+}
+
 function mapExamFromApi(e: any): Exam {
   return {
     id: e.id,
@@ -248,6 +294,7 @@ function mapExamFromApi(e: any): Exam {
     attemptLimit: e.attempt_limit,
     shuffleQuestions: Boolean(e.shuffle_questions),
     assignedClassIds: e.assigned_class_ids ?? undefined,
+    questionTypeSettings: mapExamQuestionTypeSettingsFromApi(e.question_type_settings),
     createdAt: e.created_at,
     updatedAt: e.updated_at,
   };
@@ -297,6 +344,14 @@ function mapMessageFromApi(m: any): Message {
     content: m.content,
     target: m.target,
     createdAt: m.created_at,
+    readAt: m.read_at ?? undefined,
+    reads: Array.isArray(m.reads)
+      ? m.reads.map((r: any) => ({
+          messageId: r.message_id,
+          studentId: r.student_id,
+          readAt: r.read_at,
+        }))
+      : undefined,
   };
 }
 
@@ -370,6 +425,29 @@ export async function teacherSetExamAssignmentsRemote(
   await requestJson("/api/teacher?resource=exam-content", {
     method: "POST",
     body: JSON.stringify({ teacherId, examId, classIds }),
+  });
+}
+
+export async function teacherListQuestionTypePresetsRemote(teacherId: string): Promise<QuestionTypePreset[]> {
+  const data = await requestJson(`/api/teacher?resource=question-type-presets&teacherId=${encodeURIComponent(teacherId)}`);
+  return (data.presets || []).map(mapQuestionTypePresetFromApi);
+}
+
+export async function teacherUpsertQuestionTypePresetRemote(
+  teacherId: string,
+  preset: { id?: string; name: string; settings: ExamQuestionTypeSettings },
+): Promise<{ id: string }> {
+  const data = await requestJson("/api/teacher?resource=question-type-presets", {
+    method: "POST",
+    body: JSON.stringify({ teacherId, preset }),
+  });
+  return { id: data.id as string };
+}
+
+export async function teacherDeleteQuestionTypePresetRemote(teacherId: string, presetId: string) {
+  await requestJson("/api/teacher?resource=question-type-presets", {
+    method: "DELETE",
+    body: JSON.stringify({ teacherId, presetId }),
   });
 }
 
@@ -559,6 +637,24 @@ export async function teacherSendMessageRemote(
   });
 }
 
+export async function teacherUpdateMessageRemote(
+  teacherId: string,
+  messageId: string,
+  payload: Omit<Message, "id" | "teacherId" | "createdAt">,
+) {
+  await requestJson("/api/teacher?resource=messages", {
+    method: "PATCH",
+    body: JSON.stringify({ teacherId, messageId, ...payload }),
+  });
+}
+
+export async function teacherDeleteMessageRemote(teacherId: string, messageId: string) {
+  await requestJson("/api/teacher?resource=messages", {
+    method: "DELETE",
+    body: JSON.stringify({ teacherId, messageId }),
+  });
+}
+
 export async function studentListMessagesRemote(studentId: string): Promise<{
   messages: Message[];
   teachersById: Map<string, User>;
@@ -570,4 +666,11 @@ export async function studentListMessagesRemote(studentId: string): Promise<{
     messages: (data.messages || []).map(mapMessageFromApi),
     teachersById,
   };
+}
+
+export async function studentMarkMessageReadRemote(studentId: string, messageId: string) {
+  await requestJson("/api/student?resource=messages", {
+    method: "POST",
+    body: JSON.stringify({ studentId, messageId }),
+  });
 }

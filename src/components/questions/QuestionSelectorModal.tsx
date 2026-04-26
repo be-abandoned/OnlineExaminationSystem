@@ -7,13 +7,16 @@ import Tag from "@/components/ui/Tag";
 import { type Question, type QuestionType, QUESTION_TYPE_LABELS, GRADE_LEVELS, SUBJECTS } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
-import { teacherListQuestionsRemote } from "@/utils/remoteApi";
+import { useTeacherQuestionsQuery } from "@/hooks/domain/useTeacherQuestionsQuery";
 
 interface QuestionSelectorModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (selectedQuestions: Question[]) => void;
-  excludeIds?: string[]; // 已经在试卷里的题目ID
+  excludeIds?: string[];
+  initialType?: "all" | QuestionType;
+  typeSettings?: Record<QuestionType, { count: number; score: number }>;
+  selectedTypeCounts?: Record<QuestionType, number>;
 }
 
 export default function QuestionSelectorModal({
@@ -21,35 +24,23 @@ export default function QuestionSelectorModal({
   onClose,
   onConfirm,
   excludeIds = [],
+  initialType = "all",
+  typeSettings,
+  selectedTypeCounts,
 }: QuestionSelectorModalProps) {
   const me = useAuthStore((s) => s.getMe());
-  const [questions, setQuestions] = useState<Question[]>([]);
+  const { data: questions = [], isLoading } = useTeacherQuestionsQuery(me?.id);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeType, setActiveType] = useState<"all" | QuestionType>("all");
   const [query, setQuery] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (isOpen && me) {
-      loadQuestions();
+    if (isOpen) {
       setSelectedIds(new Set());
       setQuery("");
-      setActiveType("all");
+      setActiveType(initialType);
     }
-  }, [isOpen, me]);
-
-  const loadQuestions = async () => {
-    if (!me) return;
-    setIsLoading(true);
-    try {
-      const data = await teacherListQuestionsRemote(me.id);
-      setQuestions(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  }, [isOpen, initialType]);
 
   const filteredQuestions = useMemo(() => {
     const s = query.trim().toLowerCase();
@@ -71,6 +62,24 @@ export default function QuestionSelectorModal({
     });
   }, [questions, activeType, query, excludeIds]);
 
+  const typeUsage = useMemo(() => {
+    return (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).reduce<Record<QuestionType, { current: number; selected: number; expected: number }>>((acc, type) => {
+      const selectedInModal = Array.from(selectedIds).filter((id) => questions.find((q) => q.id === id)?.type === type).length;
+      acc[type] = {
+        current: selectedTypeCounts?.[type] ?? 0,
+        selected: selectedInModal,
+        expected: typeSettings?.[type]?.count ?? 0,
+      };
+      return acc;
+    }, {
+      single: { current: 0, selected: 0, expected: 0 },
+      multiple: { current: 0, selected: 0, expected: 0 },
+      true_false: { current: 0, selected: 0, expected: 0 },
+      blank: { current: 0, selected: 0, expected: 0 },
+      short: { current: 0, selected: 0, expected: 0 },
+    });
+  }, [questions, selectedIds, selectedTypeCounts, typeSettings]);
+
   const handleConfirm = () => {
     const selected = questions.filter((q) => selectedIds.has(q.id));
     onConfirm(selected);
@@ -78,9 +87,17 @@ export default function QuestionSelectorModal({
   };
 
   const toggleSelection = (id: string) => {
+    const question = questions.find((q) => q.id === id);
+    if (!question) return;
     const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      setSelectedIds(next);
+      return;
+    }
+    const usage = typeUsage[question.type];
+    if (usage.expected > 0 && usage.current + usage.selected >= usage.expected) return;
+    next.add(id);
     setSelectedIds(next);
   };
 
@@ -89,7 +106,17 @@ export default function QuestionSelectorModal({
       setSelectedIds(new Set());
     } else {
       const next = new Set(selectedIds);
-      filteredQuestions.forEach((q) => next.add(q.id));
+      filteredQuestions.forEach((q) => {
+        if (next.has(q.id)) return;
+        const usage = typeUsage[q.type];
+        const nextTypeCount = Array.from(next).filter((id) => questions.find((item) => item.id === id)?.type === q.type).length;
+        const selectedInModal = nextTypeCount;
+        const selectedOutside = selectedTypeCounts?.[q.type] ?? 0;
+        const expected = typeSettings?.[q.type]?.count ?? 0;
+        if (expected > 0 && selectedOutside + selectedInModal >= expected) return;
+        if (usage.expected > 0 && selectedOutside + selectedInModal >= usage.expected) return;
+        next.add(q.id);
+      });
       setSelectedIds(next);
     }
   };
@@ -131,6 +158,16 @@ export default function QuestionSelectorModal({
               className="pl-9"
             />
           </div>
+        </div>
+        <div className="mb-4 grid gap-2 rounded-lg bg-zinc-50 p-3 text-xs text-zinc-600 sm:grid-cols-5">
+          {(Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).map((type) => {
+            const usage = typeUsage[type];
+            return (
+              <div key={type} className={usage.expected > 0 && usage.current + usage.selected >= usage.expected ? "font-semibold text-red-600" : ""}>
+                {QUESTION_TYPE_LABELS[type]}：{usage.current + usage.selected}/{usage.expected || "不限"}
+              </div>
+            );
+          })}
         </div>
 
         <div className="flex flex-1 overflow-hidden border rounded-lg">
@@ -197,20 +234,28 @@ export default function QuestionSelectorModal({
                     </td>
                   </tr>
                 ) : (
-                  filteredQuestions.map((q) => (
+                  filteredQuestions.map((q) => {
+                    const usage = typeUsage[q.type];
+                    const checked = selectedIds.has(q.id);
+                    const disabled = !checked && usage.expected > 0 && usage.current + usage.selected >= usage.expected;
+                    return (
                     <tr
                       key={q.id}
                       className={cn(
-                        "hover:bg-zinc-50/50 transition-colors cursor-pointer",
-                        selectedIds.has(q.id) ? "bg-blue-50/30" : ""
+                        "hover:bg-zinc-50/50 transition-colors",
+                        checked ? "bg-blue-50/30" : "",
+                        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
                       )}
-                      onClick={() => toggleSelection(q.id)}
+                      onClick={() => {
+                        if (!disabled) toggleSelection(q.id);
+                      }}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           className="rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
-                          checked={selectedIds.has(q.id)}
+                          checked={checked}
+                          disabled={disabled}
                           onChange={() => toggleSelection(q.id)}
                         />
                       </td>
@@ -235,7 +280,8 @@ export default function QuestionSelectorModal({
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

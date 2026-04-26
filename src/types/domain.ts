@@ -56,6 +56,12 @@ export type MessageTarget =
   | { type: "all_students" }
   | { type: "students"; studentIds: string[] };
 
+export type MessageRead = {
+  messageId: string;
+  studentId: string;
+  readAt: string;
+};
+
 export type Message = {
   id: string;
   teacherId: string;
@@ -63,6 +69,8 @@ export type Message = {
   content: string;
   target: MessageTarget;
   createdAt: string;
+  readAt?: string;
+  reads?: MessageRead[];
 };
 
 export type QuestionType = "single" | "multiple" | "true_false" | "blank" | "short";
@@ -99,6 +107,27 @@ export type Question = {
 
 export type ExamStatus = "draft" | "published" | "closed";
 
+export const EXAM_STATUS_LABELS: Record<ExamStatus, string> = {
+  draft: "草稿",
+  published: "已发布",
+  closed: "已关闭",
+};
+
+export type QuestionTypeSetting = {
+  count: number;
+  score: number;
+};
+
+export type ExamQuestionTypeSettings = Record<QuestionType, QuestionTypeSetting>;
+
+export type QuestionTypePreset = {
+  id: string;
+  name: string;
+  settings: ExamQuestionTypeSettings;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Exam = {
   id: string;
   teacherId: string;
@@ -113,6 +142,7 @@ export type Exam = {
   attemptLimit: number;
   shuffleQuestions: boolean;
   assignedClassIds?: string[];
+  questionTypeSettings?: ExamQuestionTypeSettings;
   createdAt: string;
   updatedAt: string;
 };
@@ -168,4 +198,3 @@ export type Db = {
   classes: Class[];
   meta: { seeded: boolean; version: number };
 };
-

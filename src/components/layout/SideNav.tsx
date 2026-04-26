@@ -1,7 +1,7 @@
-import { type ReactNode, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { type ReactNode, useEffect, useState } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, LoaderCircle } from "lucide-react";
 
 export type NavItem = {
   to?: string;
@@ -13,6 +13,7 @@ export type NavItem = {
 
 function NavItemRenderer({ it, depth = 0 }: { it: NavItem; depth?: number }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const hasChildren = it.children && it.children.length > 0;
   const isActive = it.to ? location.pathname === it.to || location.pathname.startsWith(it.to + "/") : false;
   
@@ -22,12 +23,27 @@ function NavItemRenderer({ it, depth = 0 }: { it: NavItem; depth?: number }) {
   );
 
   const [isExpanded, setIsExpanded] = useState(isChildActive);
+  const [isNavigating, setIsNavigating] = useState(false);
 
-  const handleClick = (e: React.MouseEvent) => {
+  useEffect(() => {
+    if (isActive) {
+      setIsNavigating(false);
+    }
+  }, [isActive]);
+
+  const handleClick = () => {
     if (hasChildren) {
-      e.preventDefault();
       setIsExpanded(!isExpanded);
     }
+    if (it.to && !isActive) {
+      setIsNavigating(true);
+      navigate(it.to);
+    }
+  };
+
+  const handleNavigate = () => {
+    if (!it.to || isActive) return;
+    setIsNavigating(true);
   };
 
   return (
@@ -35,6 +51,7 @@ function NavItemRenderer({ it, depth = 0 }: { it: NavItem; depth?: number }) {
       {it.to && !hasChildren ? (
         <NavLink
           to={it.to}
+          onClick={handleNavigate}
           onMouseEnter={it.onMouseEnter}
           className={({ isActive: linkActive }) =>
             cn(
@@ -47,6 +64,7 @@ function NavItemRenderer({ it, depth = 0 }: { it: NavItem; depth?: number }) {
         >
           {it.icon && <span className={cn("text-zinc-500", depth === 0 ? "" : "opacity-70")}>{it.icon}</span>}
           <span className="truncate flex-1">{it.label}</span>
+          {isNavigating ? <LoaderCircle className="h-4 w-4 animate-spin text-blue-600" /> : null}
         </NavLink>
       ) : (
         <button
@@ -62,7 +80,7 @@ function NavItemRenderer({ it, depth = 0 }: { it: NavItem; depth?: number }) {
           <span className="truncate flex-1">{it.label}</span>
           {hasChildren && (
             <span className="text-zinc-400">
-              {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {isNavigating ? <LoaderCircle className="h-4 w-4 animate-spin text-blue-600" /> : isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             </span>
           )}
         </button>

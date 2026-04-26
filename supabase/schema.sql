@@ -168,6 +168,29 @@ begin
   end if;
 end $$;
 
+create table if not exists public.message_reads (
+  message_id uuid not null references public.messages(id) on delete cascade,
+  student_id uuid not null references public.users(id) on delete cascade,
+  read_at timestamptz not null default now(),
+  primary key (message_id, student_id)
+);
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='message_reads' and column_name='message_id' and data_type <> 'uuid'
+  ) then
+    execute 'alter table public.message_reads alter column message_id type uuid using message_id::uuid';
+  end if;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='message_reads' and column_name='student_id' and data_type <> 'uuid'
+  ) then
+    execute 'alter table public.message_reads alter column student_id type uuid using student_id::uuid';
+  end if;
+end $$;
+
 create table if not exists public.questions (
   id uuid primary key default gen_random_uuid(),
   teacher_id uuid not null references public.users(id) on delete cascade,
@@ -214,6 +237,15 @@ create table if not exists public.exams (
   attempt_limit int not null,
   shuffle_questions boolean not null default false,
   assigned_class_ids jsonb,
+  question_type_settings jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.question_type_presets (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  settings jsonb not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -364,6 +396,7 @@ end $$;
 -- =========================================================
 create index if not exists idx_users_role on public.users(role);
 create index if not exists idx_users_school_no on public.users(school_no);
+create index if not exists idx_message_reads_student on public.message_reads(student_id);
 create index if not exists idx_questions_teacher on public.questions(teacher_id);
 create index if not exists idx_exams_teacher on public.exams(teacher_id);
 create index if not exists idx_exam_assignments_student on public.exam_assignments(student_id);

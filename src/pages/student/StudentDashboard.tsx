@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { useAuthStore } from "@/stores/authStore";
-import { Attempt } from "@/types/domain";
+import type { Attempt, Exam } from "@/types/domain";
 import Modal from "@/components/ui/Modal";
 import ExamTimeStatusDisplay from "@/components/exam/ExamTimeStatus";
 import { formatTime, formatDuration } from "@/utils/examTime";
@@ -13,7 +13,10 @@ import { useStudentDashboardQuery } from "@/hooks/domain/useStudentDashboardQuer
 import { usePrefetchStudentExamDetail } from "@/hooks/domain/useStudentExamDetailQuery";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
-const getExamStatusDisplay = (e: any, attempts: Attempt[]) => {
+const EMPTY_EXAMS: Exam[] = [];
+const EMPTY_ATTEMPTS: Attempt[] = [];
+
+const getExamStatusDisplay = (e: Exam, attempts: Attempt[]) => {
   const attempt = attempts.find((a) => a.examId === e.id);
   if (attempt) {
     switch (attempt.status) {
@@ -30,12 +33,23 @@ export default function StudentDashboard() {
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [isWarningOpen, setIsWarningOpen] = useState(false);
+  const [isStartWarningOpen, setIsStartWarningOpen] = useState(false);
   const { data, isLoading, isRefreshing, error } = useStudentDashboardQuery(me?.id);
   const prefetchStudentExamDetail = usePrefetchStudentExamDetail();
-  const exams = data?.exams || [];
-  const attempts = data?.attempts || [];
+  const exams = data?.exams ?? EMPTY_EXAMS;
+  const attempts = data?.attempts ?? EMPTY_ATTEMPTS;
 
-  const handleDetailClick = (e: any) => {
+  const handleStartAttempt = async (e: Exam) => {
+    const start = e.startAt ? Date.parse(e.startAt) : undefined;
+    if (start && Date.now() < start) {
+      setIsStartWarningOpen(true);
+      return;
+    }
+    const a = await studentStartOrResumeAttemptRemote(me!.id, e.id);
+    navigate(`/student/attempts/${a.id}`);
+  };
+
+  const handleDetailClick = (e: Exam) => {
     const attempt = attempts.find(a => a.examId === e.id);
     if (attempt && (attempt.status === "submitted" || attempt.status === "graded")) {
       // Check if exam is ended
@@ -174,10 +188,7 @@ export default function StudentDashboard() {
                             // Only show Start button if not ended
                             (e.endAt && Date.now() > Date.parse(e.endAt)) ? null : (
                               <Button
-                                onClick={async () => {
-                                  const a = await studentStartOrResumeAttemptRemote(me.id, e.id);
-                                  navigate(`/student/attempts/${a.id}`);
-                                }}
+                                onClick={() => void handleStartAttempt(e)}
                               >
                                 开始/继续
                               </Button>
@@ -210,6 +221,19 @@ export default function StudentDashboard() {
           <p className="text-zinc-600">考试时间未结束，请耐心等候考试结果</p>
           <div className="flex justify-end">
             <Button onClick={() => setIsWarningOpen(false)}>确定</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isStartWarningOpen}
+        onClose={() => setIsStartWarningOpen(false)}
+        title="提示"
+      >
+        <div className="space-y-4">
+          <p className="text-zinc-600">考试还未开始请耐心等待</p>
+          <div className="flex justify-end">
+            <Button onClick={() => setIsStartWarningOpen(false)}>确定</Button>
           </div>
         </div>
       </Modal>

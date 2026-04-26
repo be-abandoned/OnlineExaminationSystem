@@ -36,7 +36,7 @@ for (const u of users || []) {
   }
 
   const email = buildAuthEmail(u.role, u.school_no);
-  const password = u.password || "123456";
+  const password = u.password || "OexTest#2026!A1";
 
   const { data: existing, error: getErr } = await supabase.auth.admin.getUserById(u.id);
   if (!getErr && existing?.user) {

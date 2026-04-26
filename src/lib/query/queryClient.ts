@@ -155,6 +155,15 @@ class QueryClient {
     });
   }
 
+  removeQueries(predicate: (key: QueryKey) => boolean) {
+    this.cache.forEach((_entry, serializedKey) => {
+      const key = JSON.parse(serializedKey) as QueryKey;
+      if (!predicate(key)) return;
+      this.cache.delete(serializedKey);
+      this.notify(serializedKey);
+    });
+  }
+
   setQueryData<T>(key: QueryKey, updater: T | ((current: T | undefined) => T)) {
     const serializedKey = serializeQueryKey(key);
     const entry = this.getOrCreateEntry<T>(serializedKey);

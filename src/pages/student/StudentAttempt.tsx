@@ -13,7 +13,6 @@ import {
 } from "@/utils/remoteApi";
 import { useStudentAttemptDetailQuery, updateStudentAttemptAnswerCache } from "@/hooks/domain/useStudentAttemptDetailQuery";
 import { queryClient } from "@/lib/query/queryClient";
-import { createQueryKey } from "@/lib/query/queryKey";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
 function msToClock(ms: number) {
@@ -61,6 +60,11 @@ export default function StudentAttempt() {
     return () => window.clearInterval(t);
   }, [data, navigate, me]);
 
+  const byQ = useMemo(
+    () => new Map((data?.answers ?? []).map((a) => [a.questionId, a] as const)),
+    [data?.answers],
+  );
+
   if (!me || !attemptId) return null;
   if (isLoading && !data) {
     return <TableSkeleton title="作答页面" columns={2} rows={5} />;
@@ -74,9 +78,9 @@ export default function StudentAttempt() {
     );
   }
 
-  const { attempt, exam, questions, answers } = data;
-  const byQ = useMemo(() => new Map(answers.map((a) => [a.questionId, a] as const)), [answers]);
-  const activeItem = questions[active];
+  const { attempt, exam, questions } = data;
+  const activeItem = questions[active] ?? questions[0];
+  if (!activeItem) return null;
 
   const getStatusLabel = (s: string) => {
     switch (s) {

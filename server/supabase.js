@@ -25,12 +25,13 @@ export async function assertTeacher(supabase, teacherId) {
   if (!teacherId) throw new Error("未登录");
   const { data, error } = await supabase
     .from("users")
-    .select("id, role")
+    .select("id, role, grade_level, subject_id")
     .eq("id", teacherId)
     .single();
   if (error || !data || data.role !== "teacher") {
     throw new Error("无教师权限");
   }
+  return data;
 }
 
 export async function assertStudent(supabase, studentId) {

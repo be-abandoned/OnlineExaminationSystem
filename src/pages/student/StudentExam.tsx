@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Tag from "@/components/ui/Tag";
+import Modal from "@/components/ui/Modal";
 import { useAuthStore } from "@/stores/authStore";
 import { studentStartOrResumeAttemptRemote } from "@/utils/remoteApi";
 
@@ -16,7 +17,12 @@ export default function StudentExam() {
   const me = useAuthStore((s) => s.getMe());
   const { examId } = useParams();
   const navigate = useNavigate();
+  const [isStartWarningOpen, setIsStartWarningOpen] = useState(false);
   const { data, isLoading, isRefreshing } = useStudentExamDetailQuery(me?.id, examId);
+  const totalScore = useMemo(
+    () => (data?.questions ?? []).reduce((sum, x) => sum + (x.eq.score || 0), 0),
+    [data?.questions],
+  );
 
   if (!me || !examId) return null;
 
@@ -43,7 +49,16 @@ export default function StudentExam() {
   }
 
   const { exam, questions } = data;
-  const totalScore = useMemo(() => questions.reduce((sum, x) => sum + (x.eq.score || 0), 0), [questions]);
+
+  const handleStartAttempt = async () => {
+    const start = exam.startAt ? Date.parse(exam.startAt) : undefined;
+    if (start && Date.now() < start) {
+      setIsStartWarningOpen(true);
+      return;
+    }
+    const a = await studentStartOrResumeAttemptRemote(me.id, exam.id);
+    navigate(`/student/attempts/${a.id}`);
+  };
 
   return (
     <div className="grid gap-4">
@@ -77,12 +92,7 @@ export default function StudentExam() {
 
           <div className="mt-6 flex items-center gap-2">
             {(!exam.endAt || Date.now() < Date.parse(exam.endAt)) && (
-              <Button
-                onClick={async () => {
-                  const a = await studentStartOrResumeAttemptRemote(me.id, exam.id);
-                  navigate(`/student/attempts/${a.id}`);
-                }}
-              >
+              <Button onClick={() => void handleStartAttempt()}>
                 开始/继续作答
               </Button>
             )}
@@ -92,6 +102,19 @@ export default function StudentExam() {
           </div>
         </CardContent>
       </Card>
+
+      <Modal
+        isOpen={isStartWarningOpen}
+        onClose={() => setIsStartWarningOpen(false)}
+        title="提示"
+      >
+        <div className="space-y-4">
+          <p className="text-zinc-600">考试还未开始请耐心等待</p>
+          <div className="flex justify-end">
+            <Button onClick={() => setIsStartWarningOpen(false)}>确定</Button>
+          </div>
+        </div>
+      </Modal>
 
       <Card>
         <CardHeader>

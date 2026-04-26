@@ -11,12 +11,13 @@ export default function TeacherQuestionCreate() {
   const navigate = useNavigate();
   const me = useAuthStore((s) => s.getMe());
 
-  if (!me) return null;
-
   const handleSave = async (data: any) => {
+    if (!me) return;
     await teacherUpsertQuestionRemote(me.id, data);
     navigate("/teacher/questions");
   };
+
+  if (!me) return null;
 
   return (
     <div className="p-4 max-w-4xl mx-auto space-y-4">

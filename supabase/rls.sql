@@ -15,7 +15,7 @@ set search_path = public
 as $$
   select exists (
     select 1 from public.users u
-    where u.id = auth.uid()::text and u.role = 'admin'
+    where u.id = auth.uid() and u.role = 'admin'
   );
 $$;
 
@@ -28,7 +28,7 @@ set search_path = public
 as $$
   select exists (
     select 1 from public.users u
-    where u.id = auth.uid()::text and u.role = 'teacher'
+    where u.id = auth.uid() and u.role = 'teacher'
   );
 $$;
 
@@ -41,7 +41,7 @@ set search_path = public
 as $$
   select exists (
     select 1 from public.users u
-    where u.id = auth.uid()::text and u.role = 'student'
+    where u.id = auth.uid() and u.role = 'student'
   );
 $$;
 
@@ -72,12 +72,12 @@ with check (public.is_admin());
 
 create policy users_self_read on public.users
 for select
-using (id = auth.uid()::text);
+using (id = auth.uid());
 
 create policy users_self_update on public.users
 for update
-using (id = auth.uid()::text)
-with check (id = auth.uid()::text);
+using (id = auth.uid())
+with check (id = auth.uid());
 
 -- ------------------------------------------------------------
 -- classes
@@ -113,8 +113,8 @@ with check (public.is_admin());
 
 create policy messages_teacher_rw on public.messages
 for all
-using (teacher_id = auth.uid()::text)
-with check (teacher_id = auth.uid()::text);
+using (teacher_id = auth.uid())
+with check (teacher_id = auth.uid());
 
 create policy messages_student_read on public.messages
 for select
@@ -125,6 +125,35 @@ using (
       target->>'type' = 'students'
       and (target->'studentIds') ? (auth.uid()::text)
     )
+  )
+);
+
+-- ------------------------------------------------------------
+-- message_reads
+-- ------------------------------------------------------------
+alter table public.message_reads enable row level security;
+
+drop policy if exists message_reads_admin_all on public.message_reads;
+drop policy if exists message_reads_student_rw on public.message_reads;
+drop policy if exists message_reads_teacher_read on public.message_reads;
+
+create policy message_reads_admin_all on public.message_reads
+for all
+using (public.is_admin())
+with check (public.is_admin());
+
+create policy message_reads_student_rw on public.message_reads
+for all
+using (student_id = auth.uid())
+with check (student_id = auth.uid());
+
+create policy message_reads_teacher_read on public.message_reads
+for select
+using (
+  public.is_teacher() and exists (
+    select 1 from public.messages m
+    where m.id = message_reads.message_id
+      and m.teacher_id = auth.uid()
   )
 );
 
@@ -142,8 +171,8 @@ with check (public.is_admin());
 
 create policy questions_teacher_rw on public.questions
 for all
-using (teacher_id = auth.uid()::text)
-with check (teacher_id = auth.uid()::text);
+using (teacher_id = auth.uid())
+with check (teacher_id = auth.uid());
 
 create policy questions_student_read_assigned on public.questions
 for select
@@ -153,7 +182,7 @@ using (
     from public.exam_questions eq
     join public.exam_assignments ea on ea.exam_id = eq.exam_id
     where eq.question_id = questions.id
-      and ea.student_id = auth.uid()::text
+      and ea.student_id = auth.uid()
   )
 );
 
@@ -171,8 +200,8 @@ with check (public.is_admin());
 
 create policy exams_teacher_rw on public.exams
 for all
-using (teacher_id = auth.uid()::text)
-with check (teacher_id = auth.uid()::text);
+using (teacher_id = auth.uid())
+with check (teacher_id = auth.uid());
 
 create policy exams_student_read_assigned on public.exams
 for select
@@ -181,7 +210,7 @@ using (
   and status = 'published'
   and exists (
     select 1 from public.exam_assignments ea
-    where ea.exam_id = exams.id and ea.student_id = auth.uid()::text
+    where ea.exam_id = exams.id and ea.student_id = auth.uid()
   )
 );
 
@@ -203,14 +232,14 @@ using (
   exists (
     select 1 from public.exams e
     where e.id = exam_questions.exam_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 )
 with check (
   exists (
     select 1 from public.exams e
     where e.id = exam_questions.exam_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 );
 
@@ -221,7 +250,7 @@ using (
   and exists (
     select 1 from public.exam_assignments ea
     where ea.exam_id = exam_questions.exam_id
-      and ea.student_id = auth.uid()::text
+      and ea.student_id = auth.uid()
   )
 );
 
@@ -243,20 +272,20 @@ using (
   exists (
     select 1 from public.exams e
     where e.id = exam_assignments.exam_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 )
 with check (
   exists (
     select 1 from public.exams e
     where e.id = exam_assignments.exam_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 );
 
 create policy exam_assignments_student_read on public.exam_assignments
 for select
-using (student_id = auth.uid()::text);
+using (student_id = auth.uid());
 
 -- ------------------------------------------------------------
 -- attempts
@@ -276,14 +305,14 @@ using (
   exists (
     select 1 from public.exams e
     where e.id = attempts.exam_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 );
 
 create policy attempts_student_rw on public.attempts
 for all
-using (student_id = auth.uid()::text)
-with check (student_id = auth.uid()::text);
+using (student_id = auth.uid())
+with check (student_id = auth.uid());
 
 -- ------------------------------------------------------------
 -- attempt_answers
@@ -305,7 +334,7 @@ using (
     from public.attempts a
     join public.exams e on e.id = a.exam_id
     where a.id = attempt_answers.attempt_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 )
 with check (
@@ -314,7 +343,7 @@ with check (
     from public.attempts a
     join public.exams e on e.id = a.exam_id
     where a.id = attempt_answers.attempt_id
-      and e.teacher_id = auth.uid()::text
+      and e.teacher_id = auth.uid()
   )
 );
 
@@ -324,13 +353,13 @@ using (
   exists (
     select 1 from public.attempts a
     where a.id = attempt_answers.attempt_id
-      and a.student_id = auth.uid()::text
+      and a.student_id = auth.uid()
   )
 )
 with check (
   exists (
     select 1 from public.attempts a
     where a.id = attempt_answers.attempt_id
-      and a.student_id = auth.uid()::text
+      and a.student_id = auth.uid()
   )
 );

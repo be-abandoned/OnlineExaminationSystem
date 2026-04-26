@@ -7,28 +7,22 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import type { UserRole } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 
-type Mode = "login" | "register";
-const DEFAULT_TEST_PASSWORD = "OexTest#2026!A1";
-
 export default function Login() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
-  const register = useAuthStore((s) => s.register);
   const me = useAuthStore((s) => s.getMe());
 
-  const [mode, setMode] = useState<Mode>("login");
   const [role, setRole] = useState<UserRole>("student");
   const [schoolNo, setSchoolNo] = useState("S20230001");
-  const [password, setPassword] = useState(DEFAULT_TEST_PASSWORD);
-  const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("OexTest#2026!A1");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const helper = useMemo(() => {
     return {
-      student: { schoolNo: "S20230001", password: DEFAULT_TEST_PASSWORD },
-      teacher: { schoolNo: "T10001", password: DEFAULT_TEST_PASSWORD },
-      admin: { schoolNo: "admin", password: DEFAULT_TEST_PASSWORD },
+      student: { schoolNo: "S20230001", password: "OexTest#2026!A1" },
+      teacher: { schoolNo: "T10001", password: "OexTest#2026!A1" },
+      admin: { schoolNo: "admin", password: "OexTest#2026!A1" },
     };
   }, []);
 

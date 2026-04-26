@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAuthStore } from "@/stores/authStore";
-import { User, UserRole, SUBJECTS, Class } from "@/types/domain";
+import { User, UserRole, SUBJECTS } from "@/types/domain";
 import { Card } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Tag from "@/components/ui/Tag";
@@ -18,6 +18,9 @@ import { useAdminUserManagementQuery } from "@/hooks/domain/useAdminUserManageme
 import { invalidateByPrefix } from "@/lib/query/invalidate";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
+const EMPTY_USERS: User[] = [];
+const EMPTY_CLASSES: { id: string; name: string }[] = [];
+
 export default function UserManagement() {
   const me = useAuthStore((s) => s.getMe());
   const [activeTab, setActiveTab] = useState<UserRole>("student");
@@ -28,8 +31,8 @@ export default function UserManagement() {
   const [editingUser, setEditingUser] = useState<Partial<User> | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { data, isLoading, isRefreshing, error } = useAdminUserManagementQuery(me?.id, activeTab);
-  const users = data?.users || [];
-  const classes = data?.classes || [];
+  const users = data?.users ?? EMPTY_USERS;
+  const classes = data?.classes ?? EMPTY_CLASSES;
 
   const classNameMap = useMemo(
     () => new Map(classes.map((item) => [item.id, item.name])),
@@ -58,8 +61,8 @@ export default function UserManagement() {
         next.delete(id);
         return next;
       });
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除用户失败");
     }
   };
 
@@ -70,11 +73,12 @@ export default function UserManagement() {
         alert("请填写必填项");
         return;
       }
-      await adminUpsertUserRemote(me.id, { ...editingUser, role: activeTab } as any);
+      const payload: Partial<User> & { role: User["role"] } = { ...editingUser, role: activeTab };
+      await adminUpsertUserRemote(me.id, payload);
       setIsEditOpen(false);
       invalidateByPrefix("admin", me.id, ["users", "stats", "classes"]);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存用户失败");
     }
   };
 
@@ -84,8 +88,8 @@ export default function UserManagement() {
     try {
       await adminBatchUpdateUserStatusRemote(me.id, Array.from(selectedIds), status);
       invalidateByPrefix("admin", me.id, ["users", "stats"]);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "批量更新状态失败");
     }
   };
 
@@ -97,8 +101,8 @@ export default function UserManagement() {
       await Promise.all(Array.from(selectedIds).map((id) => adminDeleteUserRemote(me.id, id)));
       invalidateByPrefix("admin", me.id, ["users", "stats", "classes"]);
       setSelectedIds(new Set());
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "批量删除用户失败");
     }
   };
 
@@ -119,15 +123,6 @@ export default function UserManagement() {
 
   const allSelected = filteredUsers.length > 0 && selectedIds.size === filteredUsers.length;
   const isIndeterminate = selectedIds.size > 0 && selectedIds.size < filteredUsers.length;
-
-  const getRoleLabel = (r: UserRole) => {
-    switch (r) {
-      case "student": return "学生";
-      case "teacher": return "教师";
-      case "admin": return "管理员";
-      default: return r;
-    }
-  };
 
   const getStatusLabel = (s: string) => {
     return s === "active" ? "启用" : "禁用";
@@ -341,7 +336,7 @@ export default function UserManagement() {
             <Input
               value={editingUser?.password || ""}
               onChange={(e) => setEditingUser(prev => ({ ...prev, password: e.target.value }))}
-              placeholder="默认 123456"
+              placeholder="默认 OexTest#2026!A1"
             />
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -357,7 +352,7 @@ export default function UserManagement() {
                 <label className="text-sm font-medium">性别</label>
                 <Select
                     value={editingUser?.gender || ""}
-                    onChange={(e) => setEditingUser(prev => ({ ...prev, gender: e.target.value as any }))}
+                    onChange={(e) => setEditingUser(prev => ({ ...prev, gender: e.target.value as User["gender"] }))}
                 >
                     <option value="">请选择</option>
                     <option value="male">男</option>
@@ -369,7 +364,7 @@ export default function UserManagement() {
             <label className="text-sm font-medium">状态</label>
             <Select
                 value={editingUser?.status || "active"}
-                onChange={(e) => setEditingUser(prev => ({ ...prev, status: e.target.value as any }))}
+                onChange={(e) => setEditingUser(prev => ({ ...prev, status: e.target.value as User["status"] }))}
             >
                 <option value="active">启用</option>
                 <option value="disabled">禁用</option>

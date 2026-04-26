@@ -1,23 +1,38 @@
-import { LogOut } from "lucide-react";
+import { LoaderCircle, LogOut } from "lucide-react";
+import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import Clock from "@/components/common/Clock";
 import { useAuthStore } from "@/stores/authStore";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 export default function TopNav({ title }: { title: string }) {
   const me = useAuthStore((s) => s.getMe());
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
+  const location = useLocation();
+  const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (navigatingTo && (location.pathname === navigatingTo || location.pathname.startsWith(navigatingTo + "/"))) {
+      setNavigatingTo(null);
+    }
+  }, [location.pathname, navigatingTo]);
+
+  const handleNavigate = (to: string) => {
+    if (location.pathname === to || location.pathname.startsWith(to + "/")) return;
+    setNavigatingTo(to);
+  };
 
   return (
     <header className="sticky top-0 z-20 border-b border-zinc-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-[1200px] items-center justify-between px-4 py-3">
-        <Link to="/" className="flex items-center gap-2">
+        <Link to="/" onClick={() => handleNavigate("/")} className="flex items-center gap-2">
           <div className="h-8 w-8 rounded-lg bg-blue-600" />
           <div>
             <div className="text-sm font-semibold text-zinc-900">{title}</div>
             <div className="text-xs text-zinc-500">在线考试系统</div>
           </div>
+          {navigatingTo === "/" ? <LoaderCircle className="h-4 w-4 animate-spin text-blue-600" /> : null}
         </Link>
         <div className="flex items-center gap-3">
           <Clock />
@@ -50,11 +65,18 @@ export default function TopNav({ title }: { title: string }) {
               </Button>
             </div>
           ) : (
-            <Button onClick={() => navigate("/login")}>登录</Button>
+            <Button
+              onClick={() => {
+                handleNavigate("/login");
+                navigate("/login");
+              }}
+            >
+              {navigatingTo === "/login" ? <LoaderCircle className="mr-1 h-4 w-4 animate-spin" /> : null}
+              登录
+            </Button>
           )}
         </div>
       </div>
     </header>
   );
 }
-
