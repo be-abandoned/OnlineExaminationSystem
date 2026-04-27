@@ -110,17 +110,6 @@ export default async function handler(req, res) {
         if (ipErr) throw new Error(ipErr.message);
         if (inProgress && inProgress.length > 0) return res.status(200).json({ attempt: inProgress[0] });
 
-        const { data: attempts, error: cErr } = await supabase
-          .from("attempts")
-          .select("id,status")
-          .eq("student_id", studentId)
-          .eq("exam_id", examId);
-        if (cErr) throw new Error(cErr.message);
-        const submittedCount = (attempts || []).filter((a) => a.status !== "in_progress").length;
-        if (submittedCount >= Number(exam.attempt_limit || 1)) {
-          return res.status(400).json({ error: "已达到考试次数上限" });
-        }
-
         const nowIso = new Date().toISOString();
         const attempt = {
           id: crypto.randomUUID(),

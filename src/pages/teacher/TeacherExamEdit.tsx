@@ -83,6 +83,28 @@ function toIsoFromLocalDateTimeInput(value?: string) {
   return localDate.toISOString();
 }
 
+function weightedRandomQuestions(items: Question[], targetDifficulty: number, count: number) {
+  const pool = [...items];
+  const selected: Question[] = [];
+  while (pool.length > 0 && selected.length < count) {
+    const weights = pool.map((question) => {
+      const difficulty = question.difficulty || 3;
+      return 1 / (Math.abs(difficulty - targetDifficulty) + 1);
+    });
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    let cursor = Math.random() * totalWeight;
+    let index = 0;
+    for (; index < pool.length; index += 1) {
+      cursor -= weights[index];
+      if (cursor <= 0) break;
+    }
+    selected.push(pool.splice(Math.min(index, pool.length - 1), 1)[0]);
+  }
+  return selected;
+}
+
+type AutoComposeResult = Partial<Record<QuestionType, { count: number; averageDifficulty: number }>>;
+
 type EditorState = {
   items: SelectedQuestionItem[];
   selectedIds: string[];
@@ -102,6 +124,7 @@ type EditorAction =
   | { type: "toggle_batch"; questionId: string }
   | { type: "set_score_draft"; scoreDraft: string }
   | { type: "add_questions"; items: { questionId: string; defaultScore: number }[] }
+  | { type: "set_selected_ids"; ids: string[] }
   | { type: "remove_selected" }
   | { type: "reorder"; items: SelectedQuestionItem[] }
   | { type: "undo" }
@@ -210,6 +233,10 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       .map((x) => ({ questionId: x.questionId, score: clampScore(x.defaultScore) }));
     if (newItems.length === 0) return state;
     return pushHistory(state, [...state.items, ...newItems]);
+  }
+  if (action.type === "set_selected_ids") {
+    const itemIds = new Set(state.items.map((item) => item.questionId));
+    return { ...state, selectedIds: action.ids.filter((id) => itemIds.has(id)) };
   }
   if (action.type === "remove_selected") {
     if (state.selectedIds.length === 0) return state;
@@ -339,6 +366,10 @@ export default function TeacherExamEdit() {
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isTypeSettingsOpen, setIsTypeSettingsOpen] = useState(false);
+  const [isAutoComposeOpen, setIsAutoComposeOpen] = useState(false);
+  const [autoComposeDifficulty, setAutoComposeDifficulty] = useState(3);
+  const [autoComposeResult, setAutoComposeResult] = useState<AutoComposeResult | null>(null);
+  const [autoComposeStatus, setAutoComposeStatus] = useState<string | null>(null);
   const [typeSettings, setTypeSettings] = useState<TypeSettings>(EMPTY_TYPE_SETTINGS);
   const [typeSettingsDraft, setTypeSettingsDraft] = useState<TypeSettings>(EMPTY_TYPE_SETTINGS);
   const [typeSettingsError, setTypeSettingsError] = useState<string | null>(null);
@@ -364,6 +395,7 @@ export default function TeacherExamEdit() {
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
+  const [autoComposeMessage, setAutoComposeMessage] = useState<string | null>(null);
   const [draftSaveProgress, setDraftSaveProgress] = useState(0);
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishProgress, setPublishProgress] = useState(0);
@@ -576,6 +608,9 @@ export default function TeacherExamEdit() {
   const visibleEditorItems = examQuestionTypeFilter === "all"
     ? editorState.items
     : editorState.items.filter((item) => questionMap.get(item.questionId)?.type === examQuestionTypeFilter);
+  const visibleEditorItemIds = visibleEditorItems.map((item) => item.questionId);
+  const visibleSelectedCount = visibleEditorItemIds.filter((id) => editorState.selectedIds.includes(id)).length;
+  const isAllVisibleSelected = visibleEditorItemIds.length > 0 && visibleSelectedCount === visibleEditorItemIds.length;
   const visibleTypeFilterButtons = (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).filter((type) => typeSettings[type].count > 0);
 
   const openTypeSettings = () => {
@@ -671,6 +706,66 @@ export default function TeacherExamEdit() {
     return shortages.length > 0 ? shortages.join("、") : "";
   };
 
+  const autoComposeQuestions = () => {
+    const selectedIds = new Set(editorState.items.map((item) => item.questionId));
+    const targetTypes = examQuestionTypeFilter === "all"
+      ? (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[])
+      : [examQuestionTypeFilter];
+    const pickedQuestions: Question[] = [];
+    const additions = targetTypes.flatMap((type) => {
+      const targetCount = typeSettings[type].count;
+      if (targetCount <= 0) return [];
+      const currentCount = selectedTypeCounts[type];
+      const needed = targetCount - currentCount;
+      if (needed <= 0) return [];
+      const picked = weightedRandomQuestions(
+        questions.filter((question) =>
+          question.type === type
+          && !selectedIds.has(question.id)
+          && (!subjectId || question.subjectId === subjectId)
+          && (!gradeLevel || question.gradeLevel === gradeLevel),
+        ),
+        autoComposeDifficulty,
+        needed,
+      );
+      pickedQuestions.push(...picked);
+      return picked.map((question) => ({ questionId: question.id, defaultScore: typeSettings[type].score || question.defaultScore || 0 }));
+    });
+    if (additions.length === 0) {
+      setAutoComposeStatus("当前筛选范围内无需补题，或题库中没有符合当前试卷年级、学科、题型要求的未选题目");
+      setAutoComposeResult(null);
+      return;
+    }
+    dispatch({ type: "add_questions", items: additions });
+    const stats = pickedQuestions.reduce<Record<QuestionType, { count: number; totalDifficulty: number }>>((acc, question) => {
+      acc[question.type].count += 1;
+      acc[question.type].totalDifficulty += question.difficulty || 3;
+      return acc;
+    }, {
+      single: { count: 0, totalDifficulty: 0 },
+      multiple: { count: 0, totalDifficulty: 0 },
+      true_false: { count: 0, totalDifficulty: 0 },
+      blank: { count: 0, totalDifficulty: 0 },
+      short: { count: 0, totalDifficulty: 0 },
+    });
+    const result = (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).reduce<AutoComposeResult>((acc, type) => {
+      if (stats[type].count > 0) {
+        acc[type] = {
+          count: stats[type].count,
+          averageDifficulty: stats[type].totalDifficulty / stats[type].count,
+        };
+      }
+      return acc;
+    }, {});
+    setAutoComposeResult(result);
+    setAutoComposeStatus("组卷完成");
+    const detail = (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[])
+      .filter((type) => result[type])
+      .map((type) => `${QUESTION_TYPE_LABELS[type]} ${result[type]!.count} 道`)
+      .join("、");
+    setAutoComposeMessage(`已一键组卷补充：${detail}`);
+  };
+
   const saveAll = async (shouldPublish = hasPublished, onProgress?: (progress: number) => void) => {
     const nextStatus = getAutomaticExamStatus(shouldPublish, endAt);
     onProgress?.(20);
@@ -681,7 +776,7 @@ export default function TeacherExamEdit() {
       gradeLevel,
       subjectId,
       status: nextStatus,
-      attemptLimit: 1,
+      attemptLimit: 0,
       startAt: toIsoFromLocalDateTimeInput(startAt),
       endAt: toIsoFromLocalDateTimeInput(endAt),
       questionTypeSettings: typeSettings,
@@ -882,24 +977,58 @@ export default function TeacherExamEdit() {
             <div className="flex items-center gap-3">
               <CardTitle>试卷题目 ({editorState.items.length})</CardTitle>
               <span className="text-xs text-zinc-500">已选中 {editorState.selectedIds.length} 题</span>
-              {editorState.selectedIds.length > 0 ? (
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-600 text-white shadow-sm hover:bg-red-700"
-                  aria-label="删除选中题目"
-                  onClick={() => dispatch({ type: "remove_selected" })}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+              {editorState.items.length > 0 ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex h-8 items-center justify-center rounded-md px-3 text-xs font-medium shadow-sm transition",
+                      isAllVisibleSelected ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200",
+                    )}
+                    onClick={() => {
+                      const current = new Set(editorState.selectedIds);
+                      if (isAllVisibleSelected) {
+                        visibleEditorItemIds.forEach((id) => current.delete(id));
+                      } else {
+                        visibleEditorItemIds.forEach((id) => current.add(id));
+                      }
+                      dispatch({ type: "set_selected_ids", ids: Array.from(current) });
+                    }}
+                  >
+                    {isAllVisibleSelected ? "取消全选" : "全选"}
+                  </button>
+                  {editorState.selectedIds.length > 0 ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-600 text-white shadow-sm hover:bg-red-700"
+                      aria-label="删除选中题目"
+                      onClick={() => dispatch({ type: "remove_selected" })}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             <div className="flex items-center gap-2">
+              <Button variant="secondary" onClick={() => {
+                setAutoComposeResult(null);
+                setAutoComposeStatus(null);
+                setIsAutoComposeOpen(true);
+              }}>
+                一键组卷
+              </Button>
               <Button onClick={() => setIsModalOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" />
                 添加题目
               </Button>
             </div>
           </div>
+          {autoComposeMessage ? (
+            <div className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">
+              {autoComposeMessage}
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-wrap items-center gap-2" aria-live="polite">
             <button
               type="button"
@@ -964,6 +1093,68 @@ export default function TeacherExamEdit() {
         </CardContent>
       </Card>
       
+      <Modal
+        isOpen={isAutoComposeOpen}
+        onClose={() => setIsAutoComposeOpen(false)}
+        title="一键组卷"
+        width="max-w-xl"
+        footer={
+          autoComposeResult ? (
+            <div className="flex justify-end">
+              <Button onClick={() => setIsAutoComposeOpen(false)}>完成</Button>
+            </div>
+          ) : (
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setIsAutoComposeOpen(false)}>取消</Button>
+              <Button onClick={autoComposeQuestions}>确认组卷</Button>
+            </div>
+          )
+        }
+      >
+        <div className="grid gap-5 text-sm text-zinc-700">
+          <div className="rounded-md bg-blue-50 px-3 py-3 text-blue-700">
+            将从题库中随机选择未加入试卷、且符合当前试卷年级和学科的题目进行补齐。当前选择的难度会影响随机权重，最终平均难度会尽量接近目标难度，但不保证全部题目都是该难度。
+          </div>
+          <div className="grid gap-3">
+            <div className="flex items-center justify-between">
+              <div className="font-medium text-zinc-900">目标难度</div>
+              <div className="text-blue-700">难度 {autoComposeDifficulty}</div>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={5}
+              step={1}
+              value={autoComposeDifficulty}
+              onChange={(e) => setAutoComposeDifficulty(Number(e.target.value))}
+              className="w-full accent-blue-600"
+              disabled={Boolean(autoComposeResult)}
+            />
+            <div className="grid grid-cols-5 text-center text-xs text-zinc-500">
+              {[1, 2, 3, 4, 5].map((level) => (
+                <div key={level}>难度{level}</div>
+              ))}
+            </div>
+          </div>
+          {autoComposeStatus ? <div className="rounded-md bg-zinc-50 px-3 py-2 text-zinc-700">{autoComposeStatus}</div> : null}
+          {autoComposeResult ? (
+            <div className="grid gap-2">
+              <div className="font-medium text-zinc-900">本次添加统计</div>
+              {(Object.keys(QUESTION_TYPE_LABELS) as QuestionType[])
+                .filter((type) => autoComposeResult[type])
+                .map((type) => (
+                  <div key={type} className="flex items-center justify-between rounded-md bg-zinc-50 px-3 py-2">
+                    <span>{QUESTION_TYPE_LABELS[type]}</span>
+                    <span className="font-medium text-zinc-900">
+                      {autoComposeResult[type]!.count} 道，平均难度 {autoComposeResult[type]!.averageDifficulty.toFixed(1)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
+
       <Modal
         isOpen={isTypeSettingsOpen}
         onClose={() => setIsTypeSettingsOpen(false)}

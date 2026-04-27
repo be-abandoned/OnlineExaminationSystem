@@ -85,7 +85,7 @@ export default function StudentExam() {
                 <div>• 总分：{totalScore} 分</div>
                 <div>• 题目：{questions.length} 题</div>
                 <div>• 限时：{exam.durationMinutes} 分钟</div>
-                <div>• 次数：限 {exam.attemptLimit} 次</div>
+                <div>• 次数：不限制，考试时间内未交卷可继续进入答题</div>
               </div>
             </div>
           </div>

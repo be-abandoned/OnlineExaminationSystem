@@ -32,7 +32,7 @@ function normalizeExamInput(input, teacherId, options = {}) {
     subject_id: input.subjectId ?? null,
     start_at: input.startAt ?? null,
     end_at: input.endAt ?? null,
-    attempt_limit: Number(input.attemptLimit || 1),
+    attempt_limit: 0,
     shuffle_questions: Boolean(input.shuffleQuestions),
     assigned_class_ids: input.assignedClassIds ?? null,
     updated_at: now,

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Tag from "@/components/ui/Tag";
+import Modal from "@/components/ui/Modal";
 import StemViewer from "@/components/questions/StemViewer";
 import AnswerEditor from "@/components/questions/AnswerEditor";
 import { useAuthStore } from "@/stores/authStore";
@@ -32,6 +33,9 @@ export default function StudentAttempt() {
   const [active, setActive] = useState(0);
   const [saving, setSaving] = useState<"idle" | "saving">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
+  const [submitStage, setSubmitStage] = useState<"confirm" | "submitting" | "done">("confirm");
+  const [submitProgress, setSubmitProgress] = useState(0);
   const { data, isLoading, isRefreshing } = useStudentAttemptDetailQuery(me?.id, attemptId);
 
   const [remainingMs, setRemainingMs] = useState<number | null>(null);
@@ -65,6 +69,24 @@ export default function StudentAttempt() {
     [data?.answers],
   );
 
+  useEffect(() => {
+    if (submitStage !== "submitting") return;
+    setSubmitProgress(8);
+    const timer = window.setInterval(() => {
+      setSubmitProgress((progress) => Math.min(progress + 8, 92));
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [submitStage]);
+
+  useEffect(() => {
+    if (submitStage !== "done") return;
+    setSubmitProgress(100);
+    const timer = window.setTimeout(() => {
+      navigate("/student", { replace: true });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [submitStage, navigate]);
+
   if (!me || !attemptId) return null;
   if (isLoading && !data) {
     return <TableSkeleton title="作答页面" columns={2} rows={5} />;
@@ -80,7 +102,6 @@ export default function StudentAttempt() {
 
   const { attempt, exam, questions } = data;
   const activeItem = questions[active] ?? questions[0];
-  if (!activeItem) return null;
 
   const getStatusLabel = (s: string) => {
     switch (s) {
@@ -90,6 +111,30 @@ export default function StudentAttempt() {
       default: return s;
     }
   };
+
+  const openSubmitModal = () => {
+    setError(null);
+    setSubmitStage("confirm");
+    setSubmitProgress(0);
+    setIsSubmitModalOpen(true);
+  };
+
+  const confirmSubmit = async () => {
+    if (submitStage !== "confirm") return;
+    setError(null);
+    setSubmitStage("submitting");
+    setSubmitProgress(8);
+    try {
+      await studentSubmitAttemptRemote(me.id, attempt.id);
+      setSubmitStage("done");
+    } catch (e) {
+      setSubmitStage("confirm");
+      setSubmitProgress(0);
+      setError(e instanceof Error ? e.message : "交卷失败");
+    }
+  };
+
+  if (!activeItem) return null;
 
   return (
     <div className="grid gap-4">
@@ -117,16 +162,7 @@ export default function StudentAttempt() {
             <Button
               variant="danger"
               disabled={attempt.status !== "in_progress"}
-              onClick={async () => {
-                const ok = window.confirm("确认交卷？交卷后不可修改答案。");
-                if (!ok) return;
-                try {
-                  await studentSubmitAttemptRemote(me.id, attempt.id);
-                  navigate(`/student/results/${attempt.id}`, { replace: true });
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : "交卷失败");
-                }
-              }}
+              onClick={openSubmitModal}
             >
               交卷
             </Button>
@@ -217,6 +253,46 @@ export default function StudentAttempt() {
           </Card>
         </div>
       </div>
+
+      <Modal
+        isOpen={isSubmitModalOpen}
+        onClose={() => {
+          if (submitStage === "confirm") setIsSubmitModalOpen(false);
+        }}
+        title="确认交卷"
+        width="max-w-lg"
+        footer={
+          submitStage === "confirm" ? (
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setIsSubmitModalOpen(false)}>取消</Button>
+              <Button variant="danger" onClick={() => void confirmSubmit()}>确认交卷</Button>
+            </div>
+          ) : null
+        }
+      >
+        <div className="grid gap-4 text-sm text-zinc-700">
+          {submitStage === "confirm" ? (
+            <>
+              <div className="rounded-md bg-red-50 px-3 py-3 text-red-700">确认交卷后将不能修改本次作答。</div>
+              <div className="text-zinc-500">请确认所有题目已经完成作答后再提交。</div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium text-zinc-900">{submitStage === "done" ? "交卷完成，正在返回工作台" : "正在交卷"}</span>
+                <span className="font-mono text-blue-700">{submitProgress}%</span>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-zinc-100">
+                <div
+                  className="h-full rounded-full bg-blue-600 transition-all duration-150"
+                  style={{ width: `${submitProgress}%` }}
+                />
+              </div>
+              <div className="text-xs text-zinc-500">请勿关闭页面，系统会在交卷完成后自动返回学生工作台。</div>
+            </>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

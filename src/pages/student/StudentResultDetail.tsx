@@ -14,6 +14,34 @@ export default function StudentResultDetail() {
   const me = useAuthStore((s) => s.getMe());
   const { attemptId } = useParams();
   const { data, isLoading, isRefreshing } = useStudentResultDetailQuery(me?.id, attemptId);
+  const byQ = useMemo(() => {
+    const typedAnswers = (data?.answers ?? []) as AttemptAnswer[];
+    return new Map<string, AttemptAnswer>(typedAnswers.map((a) => [a.questionId, a]));
+  }, [data?.answers]);
+  const stats = useMemo(() => {
+    if (!data?.attempt.scorePublished) return null;
+    const s = {
+      correct: 0,
+      partial: 0,
+      wrong: 0,
+      manual: 0,
+    };
+    data.questions.forEach(({ eq, q }) => {
+      const aa = byQ.get(q.id);
+      const score = (aa?.autoScore ?? 0) + (aa?.manualScore ?? 0);
+      const total = eq.score;
+      if (q.type === "short") {
+        s.manual++;
+      } else if (score === total && score > 0) {
+        s.correct++;
+      } else if (score > 0) {
+        s.partial++;
+      } else {
+        s.wrong++;
+      }
+    });
+    return s;
+  }, [data, byQ]);
 
   if (!me || !attemptId) return null;
   if (isLoading && !data) {
@@ -27,38 +55,7 @@ export default function StudentResultDetail() {
     );
   }
 
-  const { attempt, exam, questions, answers } = data;
-  const typedAnswers = answers as AttemptAnswer[];
-  const byQ = new Map<string, AttemptAnswer>(typedAnswers.map((a) => [a.questionId, a]));
-
-  // 统计每种题型的正误情况
-  const stats = useMemo(() => {
-    const s = {
-      correct: 0,
-      partial: 0,
-      wrong: 0,
-      manual: 0,
-    };
-    
-    if (!attempt.scorePublished) return null;
-
-    questions.forEach(({ eq, q }) => {
-      const aa = byQ.get(q.id);
-      const score = (aa?.autoScore ?? 0) + (aa?.manualScore ?? 0);
-      const total = eq.score;
-      
-      if (q.type === "short") {
-        s.manual++;
-      } else if (score === total && score > 0) {
-        s.correct++;
-      } else if (score > 0) {
-        s.partial++;
-      } else {
-        s.wrong++;
-      }
-    });
-    return s;
-  }, [attempt.scorePublished, questions, byQ]);
+  const { attempt, exam, questions } = data;
 
   return (
     <div className="grid gap-4">
