@@ -101,7 +101,7 @@ export default function StudentDashboard() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardTitle>待考/进行中</CardTitle>
+            <CardTitle>待考/考试中</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold text-zinc-900">{pending}</div>

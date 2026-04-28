@@ -10,6 +10,14 @@ import { type AttemptAnswer, QUESTION_TYPE_LABELS } from "@/types/domain";
 import { useStudentResultDetailQuery } from "@/hooks/domain/useStudentResultDetailQuery";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
+function isSubjectiveType(type: string) {
+  return type === "blank" || type === "short";
+}
+
+function getDisplayScore(aa: AttemptAnswer | undefined, type: string) {
+  return isSubjectiveType(type) ? (aa?.manualScore ?? 0) : (aa?.autoScore ?? 0);
+}
+
 export default function StudentResultDetail() {
   const me = useAuthStore((s) => s.getMe());
   const { attemptId } = useParams();
@@ -28,9 +36,9 @@ export default function StudentResultDetail() {
     };
     data.questions.forEach(({ eq, q }) => {
       const aa = byQ.get(q.id);
-      const score = (aa?.autoScore ?? 0) + (aa?.manualScore ?? 0);
+      const score = getDisplayScore(aa, q.type);
       const total = eq.score;
-      if (q.type === "short") {
+      if (isSubjectiveType(q.type)) {
         s.manual++;
       } else if (score === total && score > 0) {
         s.correct++;
@@ -111,7 +119,7 @@ export default function StudentResultDetail() {
           <div className="grid gap-4">
             {questions.map(({ eq, q }, idx) => {
               const aa = byQ.get(q.id);
-              const score = (aa?.autoScore ?? 0) + (aa?.manualScore ?? 0);
+              const score = getDisplayScore(aa, q.type);
               const scoreText = attempt.scorePublished
                 ? `${score} / ${eq.score}`
                 : `- / ${eq.score}`;
@@ -161,7 +169,7 @@ export default function StudentResultDetail() {
                         </div>
 
                         {/* 主观题参考答案 */}
-                        {q.type === "short" && (
+                        {isSubjectiveType(q.type) && (
                           <div className="rounded-md bg-zinc-100 p-3">
                             <div className="text-xs font-bold text-zinc-700 mb-1">参考答案</div>
                             <div className="text-sm text-zinc-800 whitespace-pre-wrap">

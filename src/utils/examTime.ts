@@ -46,7 +46,7 @@ export function calculateExamTimeStatus(
 
     const seconds = Math.floor((diff % (60 * 1000)) / 1000);
     return {
-      label: "即将开始",
+      label: "未开始",
       tone: "red",
       detail: `离考试开始还有 ${minutes} 分钟 ${seconds} 秒`,
     };
@@ -65,7 +65,7 @@ export function calculateExamTimeStatus(
     
     if (hours >= 1) {
       return {
-        label: "进行中",
+        label: "考试中",
         tone: "green",
         detail: `离收卷还有 ${hours} 小时 ${minutes} 分钟`,
       };
@@ -73,14 +73,14 @@ export function calculateExamTimeStatus(
 
     const seconds = Math.floor((diff % (60 * 1000)) / 1000);
     return {
-      label: "进行中",
+      label: "考试中",
       tone: "blue",
       detail: `离收卷还有 ${minutes} 分钟 ${seconds} 秒`,
     };
   }
 
   // 无结束时间的情况
-  return { label: "进行中", tone: "green" };
+  return { label: "考试中", tone: "green" };
 }
 
 export function formatDuration(minutes: number): string {

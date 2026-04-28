@@ -1,32 +1,38 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { useAuthStore } from "@/stores/authStore";
-
-function imageUrl(prompt: string, size: string) {
-  const encoded = encodeURIComponent(prompt);
-  return `https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=${encoded}&image_size=${size}`;
-}
+import { studentGetProfileRemote, studentUpdateProfileRemote } from "@/utils/remoteApi";
+import { getStudentProfileKey, useStudentProfileQuery } from "@/hooks/domain/useStudentProfileQuery";
+import { queryClient } from "@/lib/query/queryClient";
 
 export default function StudentProfile() {
   const me = useAuthStore((s) => s.getMe());
   const updateProfile = useAuthStore((s) => s.updateProfile);
-  const [name, setName] = useState(me?.displayName ?? "");
-  const [avatarUrl, setAvatarUrl] = useState(me?.avatarUrl ?? "");
+  const { data, isLoading, error } = useStudentProfileQuery(me?.id);
+  const profileUser = data?.user ?? me;
+  const [name, setName] = useState(profileUser?.displayName ?? "");
   const [saving, setSaving] = useState(false);
   const [ok, setOk] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const avatars = useMemo(() => {
-    return [
-      imageUrl("portrait avatar, student, minimal flat illustration, blue accent, white background", "square"),
-      imageUrl("portrait avatar, student with glasses, minimal flat illustration, blue accent, white background", "square"),
-      imageUrl("portrait avatar, student, minimal flat illustration, warm neutral, white background", "square"),
-      imageUrl("portrait avatar, student, minimal flat illustration, light background, friendly", "square"),
-    ];
-  }, []);
+  useEffect(() => {
+    if (!profileUser) return;
+    setName(profileUser.displayName);
+  }, [profileUser?.displayName]);
 
-  if (!me) return null;
+  const classText = useMemo(() => {
+    if (isLoading && !data) return "加载中...";
+    if (error) return "班级信息加载失败";
+    if (data?.classInfo) {
+      return `${data.classInfo.name}（${data.classInfo.gradeLevel}年级）`;
+    }
+    if (profileUser?.classId) return "未找到班级信息";
+    return "暂未分配班级";
+  }, [data, error, isLoading, profileUser?.classId]);
+
+  if (!me || !profileUser) return null;
 
   return (
     <Card>
@@ -35,61 +41,42 @@ export default function StudentProfile() {
       </CardHeader>
       <CardContent>
         <div className="grid gap-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="sm:col-span-1">
-              <div className="text-xs font-medium text-zinc-700">头像预览</div>
-              <div className="mt-2">
-                <img
-                  src={avatarUrl || me.avatarUrl || avatars[0]}
-                  alt="avatar"
-                  className="h-24 w-24 rounded-full border border-zinc-200 object-cover"
-                />
-              </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid gap-1">
+              <div className="text-xs font-medium text-zinc-700">姓名</div>
+              <Input value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <div className="sm:col-span-2">
-              <div className="grid gap-3">
-                <div className="grid gap-1">
-                  <div className="text-xs font-medium text-zinc-700">姓名</div>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} />
-                </div>
-                <div className="grid gap-1">
-                  <div className="text-xs font-medium text-zinc-700">头像 URL（可选）</div>
-                  <Input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
-                </div>
-              </div>
+            <div className="grid gap-1">
+              <div className="text-xs font-medium text-zinc-700">学号</div>
+              <Input value={profileUser.schoolNo} readOnly className="bg-zinc-50 text-zinc-600" />
             </div>
-          </div>
-
-          <div>
-            <div className="text-xs font-medium text-zinc-700">推荐头像</div>
-            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {avatars.map((u) => (
-                <button
-                  key={u}
-                  className={
-                    (avatarUrl || me.avatarUrl) === u
-                      ? "overflow-hidden rounded-xl border border-blue-400"
-                      : "overflow-hidden rounded-xl border border-zinc-200 hover:border-zinc-300"
-                  }
-                  onClick={() => setAvatarUrl(u)}
-                >
-                  <img src={u} alt="avatar" className="h-20 w-full object-cover" />
-                </button>
-              ))}
+            <div className="grid gap-1 sm:col-span-2">
+              <div className="text-xs font-medium text-zinc-700">所在班级</div>
+              <Input value={classText} readOnly className="bg-zinc-50 text-zinc-600" />
             </div>
           </div>
 
           {ok ? <div className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">已保存</div> : null}
+          {saveError ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{saveError}</div> : null}
 
           <div>
             <Button
               disabled={saving}
-              onClick={() => {
+              onClick={async () => {
                 setSaving(true);
                 setOk(false);
+                setSaveError(null);
                 try {
-                  updateProfile({ displayName: name.trim() || me.displayName, avatarUrl: avatarUrl.trim() || undefined });
+                  const saved = await studentUpdateProfileRemote(me.id, { displayName: name.trim() || me.displayName });
+                  updateProfile({ displayName: saved.displayName });
+                  queryClient.setQueryData<Awaited<ReturnType<typeof studentGetProfileRemote>>>(getStudentProfileKey(me.id), (current) => ({
+                    user: saved,
+                    classInfo: current?.classInfo ?? data?.classInfo ?? null,
+                  }));
+                  setName(saved.displayName);
                   setOk(true);
+                } catch (err) {
+                  setSaveError(err instanceof Error ? err.message : "保存失败");
                 } finally {
                   setSaving(false);
                 }
@@ -103,4 +90,3 @@ export default function StudentProfile() {
     </Card>
   );
 }
-

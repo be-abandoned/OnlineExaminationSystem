@@ -12,7 +12,11 @@ import {
   studentSaveAnswerRemote,
   studentSubmitAttemptRemote,
 } from "@/utils/remoteApi";
-import { useStudentAttemptDetailQuery, updateStudentAttemptAnswerCache } from "@/hooks/domain/useStudentAttemptDetailQuery";
+import {
+  useStudentAttemptDetailQuery,
+  updateStudentAttemptAnswerCache,
+  updateStudentAttemptSubmittedCache,
+} from "@/hooks/domain/useStudentAttemptDetailQuery";
 import { queryClient } from "@/lib/query/queryClient";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
@@ -50,7 +54,11 @@ export default function StudentAttempt() {
       setRemainingMs(remain);
       if (remain <= 0 && data.attempt.status === "in_progress") {
         try {
-          await studentSubmitAttemptRemote(me!.id, data.attempt.id);
+          const submittedAttempt = await studentSubmitAttemptRemote(me!.id, data.attempt.id);
+          updateStudentAttemptSubmittedCache(me!.id, submittedAttempt);
+          queryClient.invalidateQueries((key) =>
+            key[0] === "student" && key[1] === me!.id && (key[2] === "dashboard" || key[2] === "attempt-detail")
+          );
           navigate(`/student/results/${data.attempt.id}`, { replace: true });
         } catch {
           setError("自动交卷失败，请手动交卷");
@@ -125,7 +133,11 @@ export default function StudentAttempt() {
     setSubmitStage("submitting");
     setSubmitProgress(8);
     try {
-      await studentSubmitAttemptRemote(me.id, attempt.id);
+      const submittedAttempt = await studentSubmitAttemptRemote(me.id, attempt.id);
+      updateStudentAttemptSubmittedCache(me.id, submittedAttempt);
+      queryClient.invalidateQueries((key) =>
+        key[0] === "student" && key[1] === me.id && (key[2] === "dashboard" || key[2] === "attempt-detail")
+      );
       setSubmitStage("done");
     } catch (e) {
       setSubmitStage("confirm");

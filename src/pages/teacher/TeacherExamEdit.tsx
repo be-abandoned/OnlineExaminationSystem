@@ -12,7 +12,7 @@ import Tag from "@/components/ui/Tag";
 import Modal from "@/components/ui/Modal";
 import QuestionSelectorModal from "@/components/questions/QuestionSelectorModal";
 import { useAuthStore } from "@/stores/authStore";
-import { EXAM_STATUS_LABELS, GRADE_LEVELS, SUBJECTS, QUESTION_TYPE_LABELS, type Class, type Exam, type ExamQuestionTypeSettings, type ExamStatus, type Question, type QuestionType, type QuestionTypePreset } from "@/types/domain";
+import { EXAM_STATUS_LABELS, EXAM_STATUS_TONES, GRADE_LEVELS, SUBJECTS, QUESTION_TYPE_LABELS, type Class, type Exam, type ExamQuestionTypeSettings, type ExamStatus, type Question, type QuestionType, type QuestionTypePreset } from "@/types/domain";
 import {
   teacherDeleteQuestionTypePresetRemote,
   teacherListQuestionTypePresetsRemote,
@@ -58,10 +58,14 @@ function normalizeTypeSettings(settings?: ExamQuestionTypeSettings): TypeSetting
   };
 }
 
-function getAutomaticExamStatus(isPublished: boolean, endAt?: string): ExamStatus {
+function getAutomaticExamStatus(isPublished: boolean, startAt?: string, endAt?: string): ExamStatus {
   if (!isPublished) return "draft";
-  if (endAt && Date.now() > new Date(endAt).getTime()) return "closed";
-  return "published";
+  const now = Date.now();
+  const start = startAt ? new Date(startAt).getTime() : Number.NaN;
+  const end = endAt ? new Date(endAt).getTime() : Number.NaN;
+  if (Number.isFinite(start) && now < start) return "not_started";
+  if (Number.isFinite(end) && now > end) return "ended";
+  return "in_progress";
 }
 
 function toLocalDateTimeInputValue(isoString?: string) {
@@ -401,6 +405,7 @@ export default function TeacherExamEdit() {
   const [publishProgress, setPublishProgress] = useState(0);
   const [publishSuccess, setPublishSuccess] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishValidationError, setPublishValidationError] = useState<string | null>(null);
   const draftSaveTimerRef = useRef<number | null>(null);
   const publishSuccessTimerRef = useRef<number | null>(null);
 
@@ -518,7 +523,7 @@ export default function TeacherExamEdit() {
     setGradeLevel(detailData.exam.gradeLevel);
     setSubjectId(detailData.exam.subjectId);
     setHasPublished(detailData.exam.status !== "draft");
-    setStatus(getAutomaticExamStatus(detailData.exam.status !== "draft", detailData.exam.endAt));
+    setStatus(detailData.exam.status);
     setStartAt(toLocalDateTimeInputValue(detailData.exam.startAt));
     setEndAt(toLocalDateTimeInputValue(detailData.exam.endAt));
     const savedTypeSettings = normalizeTypeSettings(detailData.exam.questionTypeSettings);
@@ -537,8 +542,9 @@ export default function TeacherExamEdit() {
   }, [detailData, examId]);
 
   useEffect(() => {
-    setStatus(getAutomaticExamStatus(hasPublished, endAt));
-  }, [hasPublished, endAt]);
+    if (status === "graded") return;
+    setStatus(getAutomaticExamStatus(hasPublished, startAt, endAt));
+  }, [hasPublished, startAt, endAt, status]);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -706,6 +712,65 @@ export default function TeacherExamEdit() {
     return shortages.length > 0 ? shortages.join("、") : "";
   };
 
+  const validatePublishReady = () => {
+    if (!(title.trim() || exam.title.trim())) {
+      return "请先填写试卷标题后再发布";
+    }
+    if (!subjectId) {
+      return "请选择学科后再发布";
+    }
+    if (!gradeLevel) {
+      return "请选择年级后再发布";
+    }
+    if (!startAt || !endAt) {
+      return "请设置开始时间和截止时间后再发布";
+    }
+
+    const startIso = toIsoFromLocalDateTimeInput(startAt);
+    const endIso = toIsoFromLocalDateTimeInput(endAt);
+    const startTime = startIso ? new Date(startIso).getTime() : Number.NaN;
+    const endTime = endIso ? new Date(endIso).getTime() : Number.NaN;
+    if (Number.isNaN(startTime) || Number.isNaN(endTime)) {
+      return "考试时间格式无效，请重新设置开始时间和截止时间";
+    }
+    if (endTime <= startTime) {
+      return "截止时间必须晚于开始时间";
+    }
+    if (!Number.isFinite(durationMinutes) || Math.floor(durationMinutes) <= 0) {
+      return "请设置大于 0 分钟的考试时长";
+    }
+
+    const configuredTypes = (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).filter((type) => typeSettings[type].count > 0);
+    if (configuredTypes.length === 0) {
+      return "请先完成题型设置后再发布";
+    }
+    const invalidScoreType = configuredTypes.find((type) => !Number.isFinite(typeSettings[type].score) || typeSettings[type].score <= 0);
+    if (invalidScoreType) {
+      return `${QUESTION_TYPE_LABELS[invalidScoreType]}已设置数量，请填写大于 0 的默认分值后再发布`;
+    }
+    const unconfiguredType = (Object.keys(QUESTION_TYPE_LABELS) as QuestionType[]).find((type) => typeSettings[type].count <= 0 && selectedTypeCounts[type] > 0);
+    if (unconfiguredType) {
+      return `${QUESTION_TYPE_LABELS[unconfiguredType]}未在题型设置中启用，请调整题型设置或移除对应题目`;
+    }
+
+    if (editorState.items.length === 0) {
+      return "请先添加题目后再发布";
+    }
+    const missingQuestion = editorState.items.find((item) => !questionMap.has(item.questionId));
+    if (missingQuestion) {
+      return "试卷中存在已失效题目，请重新选择题目后再发布";
+    }
+    const shortage = getTypeShortageMessage();
+    if (shortage) {
+      return `题目数量不足：${shortage}，请补齐后再发布`;
+    }
+    if (editorState.items.some((item) => !Number.isFinite(item.score) || item.score <= 0)) {
+      return "请为所有已选题目设置大于 0 的分值后再发布";
+    }
+
+    return null;
+  };
+
   const autoComposeQuestions = () => {
     const selectedIds = new Set(editorState.items.map((item) => item.questionId));
     const targetTypes = examQuestionTypeFilter === "all"
@@ -767,7 +832,7 @@ export default function TeacherExamEdit() {
   };
 
   const saveAll = async (shouldPublish = hasPublished, onProgress?: (progress: number) => void) => {
-    const nextStatus = getAutomaticExamStatus(shouldPublish, endAt);
+    const nextStatus = getAutomaticExamStatus(shouldPublish, startAt, endAt);
     onProgress?.(20);
     const next = await teacherUpsertExamRemote(me.id, {
       id: examId,
@@ -775,7 +840,7 @@ export default function TeacherExamEdit() {
       durationMinutes: Math.max(1, Math.floor(durationMinutes)),
       gradeLevel,
       subjectId,
-      status: nextStatus,
+      status: shouldPublish ? "published" : "draft",
       attemptLimit: 0,
       startAt: toIsoFromLocalDateTimeInput(startAt),
       endAt: toIsoFromLocalDateTimeInput(endAt),
@@ -790,7 +855,7 @@ export default function TeacherExamEdit() {
     onProgress?.(100);
     setHasPublished(shouldPublish);
     setStatus(nextStatus);
-    invalidateByPrefix("teacher", me.id, ["exam-detail", "exams", "dashboard"]);
+    invalidateByPrefix("teacher", me.id, ["exam-detail", "exams", "dashboard", "messages"]);
     return next;
   };
 
@@ -820,6 +885,11 @@ export default function TeacherExamEdit() {
 
   const publishExam = async () => {
     if (isPublishing) return;
+    const validationError = validatePublishReady();
+    if (validationError) {
+      setPublishError(validationError);
+      return;
+    }
     if (publishSuccessTimerRef.current) {
       window.clearTimeout(publishSuccessTimerRef.current);
       publishSuccessTimerRef.current = null;
@@ -876,7 +946,7 @@ export default function TeacherExamEdit() {
               {isRefreshing ? <span className="text-xs text-zinc-500">正在刷新...</span> : null}
             </div>
             <div className="flex items-center gap-2">
-              <Tag tone={status === "published" ? "green" : status === "draft" ? "zinc" : "amber"}>
+              <Tag tone={EXAM_STATUS_TONES[status]}>
                 {EXAM_STATUS_LABELS[status]}
               </Tag>
               <Button
@@ -888,12 +958,13 @@ export default function TeacherExamEdit() {
               </Button>
               <Button
                 onClick={() => {
-                  const shortage = getTypeShortageMessage();
-                  if (shortage) {
-                    alert(`未选够预设题型数量：${shortage}`);
+                  const validationError = validatePublishReady();
+                  if (validationError) {
+                    setPublishValidationError(validationError);
                     return;
                   }
                   setIsPublishModalOpen(true);
+                  setPublishValidationError(null);
                   setPublishError(null);
                   setPublishSuccess(false);
                   setPublishProgress(0);
@@ -1261,6 +1332,22 @@ export default function TeacherExamEdit() {
           <div className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">
             试卷分数：{totalScore}/{expectedTotalScore} 分
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(publishValidationError)}
+        onClose={() => setPublishValidationError(null)}
+        title="无法发布试卷"
+        width="max-w-sm"
+        footer={
+          <div className="flex justify-end">
+            <Button onClick={() => setPublishValidationError(null)}>知道了</Button>
+          </div>
+        }
+      >
+        <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          {publishValidationError}
         </div>
       </Modal>
 

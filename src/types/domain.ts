@@ -54,7 +54,8 @@ export type User = {
 
 export type MessageTarget =
   | { type: "all_students" }
-  | { type: "students"; studentIds: string[] };
+  | { type: "students"; studentIds: string[] }
+  | { type: "classes"; classIds: string[] };
 
 export type MessageRead = {
   messageId: string;
@@ -105,12 +106,23 @@ export type Question = {
   updatedAt: string;
 };
 
-export type ExamStatus = "draft" | "published" | "closed";
+export type ExamStatus = "draft" | "not_started" | "in_progress" | "ended" | "graded";
+export type PersistedExamStatus = "draft" | "published" | "closed";
 
 export const EXAM_STATUS_LABELS: Record<ExamStatus, string> = {
   draft: "草稿",
-  published: "已发布",
-  closed: "已关闭",
+  not_started: "未开始",
+  in_progress: "考试中",
+  ended: "已结束",
+  graded: "已阅卷",
+};
+
+export const EXAM_STATUS_TONES: Record<ExamStatus, "zinc" | "blue" | "green" | "amber" | "red"> = {
+  draft: "zinc",
+  not_started: "amber",
+  in_progress: "green",
+  ended: "blue",
+  graded: "green",
 };
 
 export type QuestionTypeSetting = {

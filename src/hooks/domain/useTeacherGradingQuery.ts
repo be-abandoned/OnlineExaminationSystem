@@ -6,6 +6,7 @@ import {
   teacherGetGradingAttemptDetailRemote,
   teacherListAttemptsForExamRemote,
 } from "@/utils/remoteApi";
+import type { Attempt, AttemptAnswer } from "@/types/domain";
 
 type GradingListData = Awaited<ReturnType<typeof teacherListAttemptsForExamRemote>>;
 type GradingDetailData = Awaited<ReturnType<typeof teacherGetGradingAttemptDetailRemote>>;
@@ -58,7 +59,11 @@ export function updateTeacherGradingDetailCache(
     });
     const totalScore = current.questions.reduce((sum, item) => {
       const currentAnswer = nextByQ.get(item.q.id);
-      return sum + Number(currentAnswer?.autoScore || 0) + Number(currentAnswer?.manualScore || 0);
+      return sum + (
+        item.q.type === "blank" || item.q.type === "short"
+          ? Number(currentAnswer?.manualScore || 0)
+          : Number(currentAnswer?.autoScore || 0)
+      );
     }, 0);
 
     return {
@@ -97,6 +102,24 @@ export function updateTeacherGradingListAttempt(
     return {
       ...current,
       attempts: current.attempts.map((attempt) => (attempt.id === attemptId ? updater(attempt) : attempt)),
+    };
+  });
+}
+
+export function updateTeacherGradingListAfterScore(
+  teacherId: string,
+  examId: string,
+  updatedAttempt: Attempt,
+  updatedAnswers: AttemptAnswer[],
+) {
+  queryClient.setQueryData<GradingListData>(getTeacherGradingListKey(teacherId, examId), (current) => {
+    if (!current) return current as GradingListData;
+    const updatedAnswerKeys = new Set(updatedAnswers.map((answer) => `${answer.attemptId}:${answer.questionId}`));
+    const remainingAnswers = current.answers.filter((answer) => !updatedAnswerKeys.has(`${answer.attemptId}:${answer.questionId}`));
+    return {
+      ...current,
+      attempts: current.attempts.map((attempt) => (attempt.id === updatedAttempt.id ? updatedAttempt : attempt)),
+      answers: [...remainingAnswers, ...updatedAnswers],
     };
   });
 }

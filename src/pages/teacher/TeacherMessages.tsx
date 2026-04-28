@@ -7,26 +7,20 @@ import Tag from "@/components/ui/Tag";
 import Modal from "@/components/ui/Modal";
 import { Pencil, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
-import type { Message } from "@/types/domain";
+import { GRADE_LEVELS, type Message } from "@/types/domain";
 import { teacherDeleteMessageRemote, teacherSendMessageRemote, teacherUpdateMessageRemote } from "@/utils/remoteApi";
 import { useTeacherMessagesQuery } from "@/hooks/domain/useTeacherMessagesQuery";
 import { invalidateByPrefix } from "@/lib/query/invalidate";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
 
-type TargetMode = "all" | "students";
 type SendNoticeStatus = "idle" | "sending" | "success";
 type NoticeAction = "create" | "edit";
-
-function getTargetMode(target: Message["target"]): TargetMode {
-  return target.type === "all_students" ? "all" : "students";
-}
 
 export default function TeacherMessages() {
   const me = useAuthStore((s) => s.getMe());
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [targetMode, setTargetMode] = useState<TargetMode>("all");
-  const [studentIds, setStudentIds] = useState<string[]>([]);
+  const [classIds, setClassIds] = useState<string[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [expandedReadStatusById, setExpandedReadStatusById] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -34,30 +28,45 @@ export default function TeacherMessages() {
   const [lastAction, setLastAction] = useState<NoticeAction>("create");
   const { data, isLoading, isRefreshing, error: loadError } = useTeacherMessagesQuery(me?.id);
   const students = data?.students || [];
+  const classes = data?.classes || [];
   const sent = data?.sent || [];
 
   const resetForm = () => {
     setTitle("");
     setContent("");
-    setTargetMode("all");
-    setStudentIds([]);
+    setClassIds([]);
     setEditingMessageId(null);
     setError(null);
+  };
+
+  const getTargetClassIds = (target: Message["target"]) => {
+    if (target.type === "classes") return target.classIds;
+    if (target.type === "all_students") return classes.map((item) => item.id);
+    if (target.type === "students") {
+      const targetStudentIds = new Set(target.studentIds);
+      return classes
+        .filter((item) => students.some((student) => student.classId === item.id && targetStudentIds.has(student.id)))
+        .map((item) => item.id);
+    }
+    return [];
   };
 
   const startEdit = (message: Message) => {
     setEditingMessageId(message.id);
     setTitle(message.title);
     setContent(message.content);
-    setTargetMode(getTargetMode(message.target));
-    setStudentIds(message.target.type === "students" ? message.target.studentIds : []);
+    setClassIds(getTargetClassIds(message.target));
     setError(null);
   };
 
   const getMessageAudience = (message: Message) => {
     if (message.target.type === "all_students") return students;
-    const targetIds = new Set(message.target.studentIds);
-    return students.filter((student) => targetIds.has(student.id));
+    if (message.target.type === "students") {
+      const targetIds = new Set(message.target.studentIds);
+      return students.filter((student) => targetIds.has(student.id));
+    }
+    const targetClassIds = new Set(message.target.classIds);
+    return students.filter((student) => student.classId && targetClassIds.has(student.classId));
   };
 
   const getMessageReadStatus = (message: Message) => {
@@ -79,6 +88,15 @@ export default function TeacherMessages() {
         ))}
       </div>
     );
+  };
+
+  const renderClassNames = (target: Message["target"]) => {
+    if (target.type === "all_students") return "全体学生";
+    if (target.type === "students") return `指定学生 ${target.studentIds.length} 人`;
+    const targetClassIds = new Set(target.classIds);
+    const names = classes.filter((item) => targetClassIds.has(item.id)).map((item) => item.name);
+    if (names.length === 0) return `指定班级 ${target.classIds.length} 个`;
+    return names.join("、");
   };
 
   if (!me) return null;
@@ -112,8 +130,7 @@ export default function TeacherMessages() {
               const payload = {
                 title: title.trim() || "公告",
                 content: content.trim(),
-                target:
-                  targetMode === "all" ? { type: "all_students" as const } : { type: "students" as const, studentIds: studentIds.slice() },
+                target: { type: "classes" as const, classIds: classIds.slice() },
               };
               try {
                 if (isEditing && editingMessageId) {
@@ -137,48 +154,58 @@ export default function TeacherMessages() {
               </div>
               <div className="grid gap-1">
                 <div className="text-xs font-medium text-zinc-700">目标</div>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm text-zinc-700">
-                    <input type="radio" checked={targetMode === "all"} onChange={() => setTargetMode("all")} />
-                    全体学生
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-zinc-700">
-                    <input type="radio" checked={targetMode === "students"} onChange={() => setTargetMode("students")} />
-                    指定学生
-                  </label>
+                <div className="flex items-center gap-2 text-sm text-zinc-700">
+                  <span>按班级发布公告</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setClassIds(classes.map((item) => item.id))}
+                  >
+                    全选
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setClassIds([])}>
+                    清空
+                  </Button>
                 </div>
               </div>
             </div>
 
-            {targetMode === "students" ? (
-              <div>
-                <div className="text-xs font-medium text-zinc-700">选择学生</div>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {students.map((s) => {
-                    const checked = studentIds.includes(s.id);
-                    return (
-                      <label
-                        key={s.id}
-                        className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-200 px-3 py-2 hover:bg-zinc-50"
-                      >
-                        <div>
-                          <div className="text-sm font-medium text-zinc-900">{s.displayName}</div>
-                          <div className="text-xs text-zinc-500">{s.schoolNo}</div>
+            <div>
+              <div className="text-xs font-medium text-zinc-700">发布班级</div>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {classes.map((c) => {
+                  const checked = classIds.includes(c.id);
+                  const studentCount = students.filter((student) => student.classId === c.id).length;
+                  return (
+                    <label
+                      key={c.id}
+                      className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-200 px-3 py-2 hover:bg-zinc-50"
+                    >
+                      <div>
+                        <div className="text-sm font-medium text-zinc-900">{c.name}</div>
+                        <div className="text-xs text-zinc-500">
+                          {GRADE_LEVELS.find((grade) => grade.value === c.gradeLevel)?.label || `${c.gradeLevel}年级`} · {studentCount} 人
                         </div>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) setStudentIds((arr) => [...arr, s.id]);
-                            else setStudentIds((arr) => arr.filter((x) => x !== s.id));
-                          }}
-                        />
-                      </label>
-                    );
-                  })}
-                </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          if (e.target.checked) setClassIds((arr) => arr.includes(c.id) ? arr : [...arr, c.id]);
+                          else setClassIds((arr) => arr.filter((x) => x !== c.id));
+                        }}
+                      />
+                    </label>
+                  );
+                })}
+                {classes.length === 0 ? (
+                  <div className="rounded-lg border border-zinc-200 px-3 py-6 text-center text-sm text-zinc-500 sm:col-span-2">
+                    暂无班级
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            </div>
 
             <div className="grid gap-1">
               <div className="text-xs font-medium text-zinc-700">内容</div>
@@ -188,7 +215,7 @@ export default function TeacherMessages() {
             {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
 
             <div className="flex items-center gap-2">
-              <Button type="submit" disabled={!content.trim() || sendStatus === "sending"}>
+              <Button type="submit" disabled={!content.trim() || classIds.length === 0 || sendStatus === "sending"}>
                 {editingMessageId ? "保存修改" : "发送"}
               </Button>
               {editingMessageId ? (
@@ -218,7 +245,7 @@ export default function TeacherMessages() {
                     <div className="mt-1 text-xs text-zinc-500">{new Date(m.createdAt).toLocaleString()}</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Tag tone="blue">{m.target.type === "all_students" ? "全体" : `指定 ${m.target.studentIds.length} 人`}</Tag>
+                    <Tag tone="blue">{m.target.type === "classes" ? `班级 ${m.target.classIds.length} 个` : "旧目标"}</Tag>
                     <Button type="button" variant="ghost" size="sm" onClick={() => startEdit(m)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
@@ -245,6 +272,7 @@ export default function TeacherMessages() {
                     </Button>
                   </div>
                 </div>
+                <div className="mt-2 text-xs text-zinc-500">发布对象：{renderClassNames(m.target)}</div>
                 <div className="mt-3 whitespace-pre-wrap text-sm text-zinc-700">{m.content}</div>
                 <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50">
                   <button

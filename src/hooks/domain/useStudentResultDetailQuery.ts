@@ -8,8 +8,7 @@ export function useStudentResultDetailQuery(studentId?: string, attemptId?: stri
 
   return useCachedQuery(key, {
     enabled: Boolean(studentId && attemptId),
-    staleTime: 30 * 1000,
+    staleTime: 0,
     fetcher: () => studentGetAttemptDetailRemote(studentId!, attemptId!),
   });
 }
-

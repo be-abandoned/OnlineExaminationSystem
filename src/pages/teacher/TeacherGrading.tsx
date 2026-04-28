@@ -1,79 +1,174 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Tag from "@/components/ui/Tag";
+import Textarea from "@/components/ui/Textarea";
 import StemViewer from "@/components/questions/StemViewer";
 import { useAuthStore } from "@/stores/authStore";
 import {
+  teacherPublishExamResultsRemote,
   teacherSaveManualScoresRemote,
-  teacherSetScorePublishedRemote,
 } from "@/utils/remoteApi";
 import {
-  updateTeacherGradingDetailCache,
+  updateTeacherGradingListAfterScore,
   updateTeacherGradingListAttempt,
-  updateTeacherGradingPublishedCache,
-  useTeacherGradingDetailQuery,
   useTeacherGradingListQuery,
 } from "@/hooks/domain/useTeacherGradingQuery";
 import { invalidateByPrefix } from "@/lib/query/invalidate";
 import TableSkeleton from "@/components/feedback/TableSkeleton";
+import { QUESTION_TYPE_LABELS, type Attempt, type AttemptAnswer, type QuestionType } from "@/types/domain";
+
+const SUBJECTIVE_TYPES = new Set<QuestionType>(["blank", "short"]);
+
+type Draft = {
+  manualScore: string;
+  teacherComment: string;
+};
+
+function isSubjectiveType(type: QuestionType) {
+  return SUBJECTIVE_TYPES.has(type);
+}
+
+function getAnswerKey(attemptId: string, questionId: string) {
+  return `${attemptId}:${questionId}`;
+}
+
+function formatAnswerValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return "未作答";
+  if (Array.isArray(value)) return value.length > 0 ? value.join("、") : "未作答";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function isAnswerManuallyGraded(answer: AttemptAnswer | undefined, attempt: Attempt) {
+  const submittedAt = attempt.submittedAt ? Date.parse(attempt.submittedAt) : Number.NaN;
+  const updatedAt = answer?.updatedAt ? Date.parse(answer.updatedAt) : Number.NaN;
+  return Number.isFinite(submittedAt) && Number.isFinite(updatedAt) && updatedAt > submittedAt;
+}
 
 export default function TeacherGrading() {
   const me = useAuthStore((s) => s.getMe());
   const { examId } = useParams();
-  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
-  const { data: listData, isLoading, isRefreshing } = useTeacherGradingListQuery(me?.id, examId);
-  const { data: detailData, isFetching: isDetailFetching } = useTeacherGradingDetailQuery(me?.id, selectedAttemptId || undefined);
-  const exam = listData?.exam || null;
-  const attempts = listData?.attempts || [];
-  const studentsById = listData?.studentsById || new Map();
-  const selectedAttempt = detailData?.attempt || null;
-  const detail = detailData
-    ? { questions: detailData.questions, byQ: detailData.byQ, student: detailData.student }
-    : null;
+  const { data, isLoading, isRefreshing } = useTeacherGradingListQuery(me?.id, examId);
+  const exam = data?.exam || null;
+  const attempts = data?.attempts || [];
+  const allQuestions = data?.questions || [];
+  const allAnswers = data?.answers || [];
+  const [activeIndexByQuestionId, setActiveIndexByQuestionId] = useState<Record<string, number>>({});
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  const [manualPatch, setManualPatch] = useState<Record<string, { manualScore: number; teacherComment: string }>>({});
-  const [successIds, setSuccessIds] = useState<Set<string>>(new Set());
+  const gradableAttempts = useMemo(
+    () => attempts.filter((attempt) => attempt.status === "submitted" || attempt.status === "graded"),
+    [attempts],
+  );
 
-  const handleSaveScore = async (questionId: string, manualScore: number, teacherComment: string) => {
-    if (!selectedAttempt) return;
+  const subjectiveQuestions = useMemo(
+    () => allQuestions.filter(({ q }) => isSubjectiveType(q.type)),
+    [allQuestions],
+  );
+
+  const answersByAttemptQuestion = useMemo(() => {
+    const next = new Map<string, AttemptAnswer>();
+    allAnswers.forEach((answer) => next.set(getAnswerKey(answer.attemptId, answer.questionId), answer));
+    return next;
+  }, [allAnswers]);
+
+  const totalAnswerCount = subjectiveQuestions.length * gradableAttempts.length;
+  const gradedAnswerCount = subjectiveQuestions.reduce((sum, { q }) => {
+    return sum + gradableAttempts.filter((attempt) => {
+      const answer = answersByAttemptQuestion.get(getAnswerKey(attempt.id, q.id));
+      return isAnswerManuallyGraded(answer, attempt);
+    }).length;
+  }, 0);
+  const publishableAttempts = attempts.filter((attempt) => attempt.status === "graded" && !attempt.scorePublished);
+
+  const persistScore = async (
+    questionId: string,
+    maxScore: number,
+    attempt: Attempt,
+    options: { force?: boolean } = {},
+  ) => {
+    if (!me?.id || !examId) return false;
+    const draftKey = getAnswerKey(attempt.id, questionId);
+    const draft = drafts[draftKey];
+    if (!draft) {
+      const existingAnswer = answersByAttemptQuestion.get(draftKey);
+      if (options.force && isAnswerManuallyGraded(existingAnswer, attempt)) {
+        return true;
+      }
+      if (options.force) {
+        setStatusMessage("请填写分数后再保存");
+        return false;
+      }
+      return true;
+    }
+
+    const trimmedScore = draft.manualScore.trim();
+    if (!trimmedScore) {
+      setStatusMessage("请填写分数后再保存");
+      return false;
+    }
+    const numericScore = Number(trimmedScore);
+    if (!Number.isFinite(numericScore)) {
+      setStatusMessage("分数格式不正确");
+      return false;
+    }
+
+    const manualScore = Math.min(maxScore, Math.max(0, Math.floor(numericScore)));
+    setSavingKey(draftKey);
+    setStatusMessage(null);
     try {
-      const patch = [{
+      const result = await teacherSaveManualScoresRemote(me.id, attempt.id, [{
         questionId,
         manualScore,
-        teacherComment
-      }];
-      updateTeacherGradingDetailCache(me?.id || "", selectedAttempt.id, questionId, manualScore, teacherComment);
-      await teacherSaveManualScoresRemote(me?.id || "", selectedAttempt.id, patch);
-      updateTeacherGradingListAttempt(me?.id || "", examId || "", selectedAttempt.id, (attempt) => ({
-        ...attempt,
-        status: "graded",
-        totalScore: detailData?.questions.reduce((sum, item) => {
-          if (item.q.id === questionId) {
-            const answer = detailData?.byQ.get(item.q.id);
-            return sum + Number(answer?.autoScore || 0) + manualScore;
-          }
-          const answer = detailData?.byQ.get(item.q.id);
-          return sum + Number(answer?.autoScore || 0) + Number(answer?.manualScore || 0);
-        }, 0) || attempt.totalScore,
-      }));
-      
-      setSuccessIds(prev => {
-        const next = new Set(prev);
-        next.add(questionId);
+        teacherComment: draft.teacherComment.trim() || undefined,
+      }]);
+      updateTeacherGradingListAfterScore(me.id, examId, result.attempt, result.answers);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[draftKey];
         return next;
       });
-    } catch (e) {
-      console.error(e);
-      alert("保存失败");
+      invalidateByPrefix("teacher", me.id, ["exams", "dashboard"]);
+      setStatusMessage("评分已保存");
+      return true;
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "保存评分失败");
+      return false;
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const publishGradedScores = async () => {
+    if (!me?.id || !examId || publishBusy || publishableAttempts.length === 0) return;
+    setPublishBusy(true);
+    setStatusMessage(null);
+    try {
+      const updatedAttempts = await teacherPublishExamResultsRemote(me.id, examId);
+      for (const attempt of updatedAttempts) {
+        updateTeacherGradingListAttempt(me.id, examId, attempt.id, (current) => ({
+          ...current,
+          ...attempt,
+        }));
+      }
+      invalidateByPrefix("teacher", me.id, ["grading-list", "grading-detail", "exams", "dashboard", "messages"]);
+      setStatusMessage("已发布已阅卷成绩，并发送考试结果通知");
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "发布成绩失败");
+    } finally {
+      setPublishBusy(false);
     }
   };
 
   if (!me || !examId) return null;
 
-  if (isLoading && !listData) {
+  if (isLoading && !data) {
     return <TableSkeleton title="阅卷中心" columns={2} rows={5} />;
   }
 
@@ -94,210 +189,206 @@ export default function TeacherGrading() {
 
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 md:col-span-5">
-          <Card>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>{exam.title}</CardTitle>
+              <div className="mt-1 text-xs text-zinc-500">
+                {isRefreshing ? "正在刷新..." : `主观题 ${subjectiveQuestions.length} 道 · 已提交答卷 ${gradableAttempts.length} 份`}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Tag tone={gradedAnswerCount === totalAnswerCount && totalAnswerCount > 0 ? "green" : "amber"}>
+                {gradedAnswerCount}/{totalAnswerCount}
+              </Tag>
+              <Button
+                variant="secondary"
+                disabled={publishBusy || publishableAttempts.length === 0}
+                onClick={() => void publishGradedScores()}
+              >
+                {publishBusy ? "发布中..." : "发布已阅卷成绩"}
+              </Button>
+              <Link to={`/teacher/exams/${examId}/edit`}>
+                <Button variant="secondary">回到编辑</Button>
+              </Link>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-300"
+              style={{ width: totalAnswerCount > 0 ? `${Math.round((gradedAnswerCount / totalAnswerCount) * 100)}%` : "0%" }}
+            />
+          </div>
+          {statusMessage ? <div className="mt-3 rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">{statusMessage}</div> : null}
+        </CardContent>
+      </Card>
+
+      {subjectiveQuestions.length === 0 ? (
+        <Card>
+          <CardContent className="px-4 py-10 text-center text-sm text-zinc-500">
+            暂无需要人工阅卷的填空题或简答题
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {subjectiveQuestions.length > 0 && gradableAttempts.length === 0 ? (
+        <Card>
+          <CardContent className="px-4 py-10 text-center text-sm text-zinc-500">
+            暂无已提交答卷
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {subjectiveQuestions.map(({ eq, q }, questionIndex) => {
+        const rows = gradableAttempts.map((attempt) => ({
+          attempt,
+          answer: answersByAttemptQuestion.get(getAnswerKey(attempt.id, q.id)),
+        }));
+        const activeIndex = rows.length > 0
+          ? Math.min(activeIndexByQuestionId[q.id] ?? 0, rows.length - 1)
+          : 0;
+        const current = rows[activeIndex];
+        const draftKey = current ? getAnswerKey(current.attempt.id, q.id) : "";
+        const graded = current ? isAnswerManuallyGraded(current.answer, current.attempt) : false;
+        const currentDraft = current
+          ? drafts[draftKey] ?? {
+              manualScore: graded ? String(current.answer?.manualScore ?? 0) : "",
+              teacherComment: current.answer?.teacherComment ?? "",
+            }
+          : { manualScore: "", teacherComment: "" };
+        const gradedCount = rows.filter((row) => isAnswerManuallyGraded(row.answer, row.attempt)).length;
+        const progress = rows.length > 0 ? Math.round((gradedCount / rows.length) * 100) : 0;
+        const isSavingCurrent = Boolean(draftKey && savingKey === draftKey);
+
+        const goPrevious = () => {
+          if (!current) return;
+          setActiveIndexByQuestionId((prev) => ({
+            ...prev,
+            [q.id]: Math.max(activeIndex - 1, 0),
+          }));
+        };
+
+        const goNext = async () => {
+          if (!current) return;
+          const saved = await persistScore(q.id, eq.score, current.attempt, { force: true });
+          if (!saved) return;
+          setActiveIndexByQuestionId((prev) => ({
+            ...prev,
+            [q.id]: Math.min(activeIndex + 1, rows.length - 1),
+          }));
+        };
+
+        const updateDraft = (patch: Partial<Draft>) => {
+          if (!current) return;
+          setDrafts((prev) => ({
+            ...prev,
+            [draftKey]: {
+              manualScore: currentDraft.manualScore,
+              teacherComment: currentDraft.teacherComment,
+              ...patch,
+            },
+          }));
+        };
+
+        return (
+          <Card key={q.id}>
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <CardTitle>答卷列表</CardTitle>
-                  {isRefreshing ? <span className="text-xs text-zinc-500">正在刷新...</span> : null}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>
+                    第 {questionIndex + 1} 题
+                    <span className="ml-2 text-sm font-medium text-zinc-500">({QUESTION_TYPE_LABELS[q.type]})</span>
+                  </CardTitle>
+                  <div className="mt-1 text-xs text-zinc-500">满分 {eq.score} 分</div>
                 </div>
-                <Link to={`/teacher/exams/${examId}/edit`}>
-                  <Button variant="secondary">回到编辑</Button>
-                </Link>
+                <div className="min-w-40">
+                  <div className="mb-1 flex items-center justify-between text-xs text-zinc-500">
+                    <span>阅卷进度</span>
+                    <span>{gradedCount}/{rows.length}</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
+                    <div
+                      className="h-full rounded-full bg-blue-600 transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
-              <div className="grid gap-2">
-                {attempts.map((a) => {
-                  const student = studentsById.get(a.studentId);
-                  const active = selectedAttemptId === a.id;
-                  return (
-                    <button
-                      key={a.id}
-                      className={
-                        active
-                          ? "rounded-xl border border-blue-300 bg-blue-50 px-3 py-2 text-left"
-                          : "rounded-xl border border-zinc-200 bg-white px-3 py-2 text-left hover:bg-zinc-50"
-                      }
-                      onClick={() => {
-                        setSelectedAttemptId(a.id);
-                        setManualPatch({});
-                        setSuccessIds(new Set());
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-zinc-900">{student?.displayName ?? "学生"}</div>
-                        <Tag tone={a.status === "graded" ? "green" : a.status === "submitted" ? "amber" : "zinc"}>{a.status}</Tag>
+              <div className="grid gap-4">
+                <div className="rounded-lg border border-zinc-200 bg-white p-4">
+                  <StemViewer blocks={q.stem} />
+                </div>
+
+                <div className="grid grid-cols-[auto_1fr_auto] items-stretch gap-3">
+                  <Button
+                    variant="secondary"
+                    disabled={!current || activeIndex === 0 || isSavingCurrent}
+                    onClick={goPrevious}
+                    className="min-h-44"
+                  >
+                    上一份
+                  </Button>
+                  <div className="rounded-lg border border-zinc-200 bg-white p-4">
+                    {current ? (
+                      <div className="min-h-44 max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 px-4 py-4 text-base leading-7 text-zinc-900">
+                        {formatAnswerValue(current.answer?.answer)}
                       </div>
-                      <div className="mt-1 flex items-center justify-between text-xs text-zinc-500">
-                        <span>{a.submittedAt ? new Date(a.submittedAt).toLocaleString() : "未交卷"}</span>
-                        <span>{a.scorePublished ? `已发布：${a.totalScore}` : "未发布"}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-                {attempts.length === 0 ? <div className="px-3 py-10 text-center text-sm text-zinc-500">暂无答卷</div> : null}
+                    ) : (
+                      <div className="flex min-h-44 items-center justify-center text-sm text-zinc-500">暂无作答</div>
+                    )}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    disabled={!current || isSavingCurrent}
+                    onClick={() => void goNext()}
+                    className="min-h-44"
+                  >
+                    下一份
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 rounded-lg border border-zinc-200 p-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-600">打分</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={eq.score}
+                      value={currentDraft.manualScore}
+                      disabled={!current || isSavingCurrent}
+                      onChange={(event) => updateDraft({ manualScore: event.target.value })}
+                      placeholder={`0-${eq.score}`}
+                      className="max-w-48"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-600">评语</label>
+                    <Textarea
+                      value={currentDraft.teacherComment}
+                      disabled={!current || isSavingCurrent}
+                      onChange={(event) => updateDraft({ teacherComment: event.target.value })}
+                      placeholder="可选"
+                      className="min-h-20"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                  <div className="mb-2 text-xs font-semibold text-blue-800">参考答案</div>
+                  <div className="whitespace-pre-wrap break-words text-sm text-blue-950">
+                    {formatAnswerValue(q.answerKey)}
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
-        </div>
-
-        <div className="col-span-12 md:col-span-7">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>阅卷面板</CardTitle>
-                {selectedAttempt ? (
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={async () => {
-                        const patch = Object.entries(manualPatch).map(([questionId, v]) => ({
-                          questionId,
-                          manualScore: v.manualScore,
-                          teacherComment: v.teacherComment || undefined,
-                        }));
-                        patch.forEach((item) => {
-                          updateTeacherGradingDetailCache(me.id, selectedAttempt.id, item.questionId, item.manualScore, item.teacherComment || "");
-                        });
-                        await teacherSaveManualScoresRemote(me.id, selectedAttempt.id, patch);
-                        invalidateByPrefix("teacher", me.id, ["grading-list", "grading-detail"]);
-                      }}
-                    >
-                      保存评分
-                    </Button>
-                    <Button
-                      onClick={async () => {
-                        const next = !selectedAttempt.scorePublished;
-                        updateTeacherGradingPublishedCache(me.id, selectedAttempt.id, next);
-                        updateTeacherGradingListAttempt(me.id, examId, selectedAttempt.id, (attempt) => ({
-                          ...attempt,
-                          scorePublished: next,
-                        }));
-                        await teacherSetScorePublishedRemote(me.id, selectedAttempt.id, next);
-                        invalidateByPrefix("teacher", me.id, ["grading-list", "grading-detail"]);
-                      }}
-                    >
-                      {selectedAttempt.scorePublished ? "撤回成绩" : "发布成绩"}
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            </CardHeader>
-            <CardContent>
-              {!selectedAttempt || !detail ? (
-                <div className="px-3 py-10 text-center text-sm text-zinc-500">
-                  {isDetailFetching ? "正在加载答卷详情..." : "选择一份答卷开始阅卷"}
-                </div>
-              ) : (
-                <div className="grid gap-4">
-                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-sm font-medium text-zinc-900">{detail.student?.displayName ?? "学生"}</div>
-                    <div className="mt-1 text-xs text-zinc-600">
-                      提交：{selectedAttempt.submittedAt ? new Date(selectedAttempt.submittedAt).toLocaleString() : "-"}
-                      <span className="mx-2">·</span>
-                      状态：{selectedAttempt.status}
-                      <span className="mx-2">·</span>
-                      总分：{selectedAttempt.totalScore}
-                    </div>
-                  </div>
-
-                  {detail.questions.map(({ eq, q }, idx) => {
-                    const aa = detail.byQ.get(q.id);
-                    const current = manualPatch[q.id] ?? { manualScore: aa?.manualScore ?? 0, teacherComment: aa?.teacherComment ?? "" };
-                    const isShort = q.type === "short";
-                    return (
-                      <div key={q.id} className="rounded-xl border border-zinc-200 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="text-sm font-semibold text-zinc-900">
-                            第 {idx + 1} 题 <span className="ml-2 text-xs font-medium text-zinc-500">({q.type})</span>
-                          </div>
-                          <Tag tone="blue">{eq.score} 分</Tag>
-                        </div>
-                        <div className="mt-3">
-                          <StemViewer blocks={q.stem} />
-                        </div>
-                        <div className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-                          <div className="text-xs font-medium text-zinc-700">学生作答</div>
-                          <div className="mt-2 whitespace-pre-wrap break-words text-sm text-zinc-800">
-                            {aa?.answer !== undefined && aa?.answer !== null && `${aa.answer}` !== ""
-                              ? typeof aa.answer === "string"
-                                ? aa.answer
-                                : JSON.stringify(aa.answer)
-                              : "未作答"}
-                          </div>
-                          <div className={`mt-3 grid grid-cols-1 gap-3 sm:grid-cols-${isShort ? 1 : 2}`}>
-                            {!isShort && (
-                              <div className="rounded-lg border border-zinc-200 bg-white p-3">
-                                <div className="text-xs font-medium text-zinc-700">自动得分</div>
-                                <div className="mt-1 text-sm font-semibold text-zinc-900">{aa?.autoScore ?? 0}</div>
-                              </div>
-                            )}
-                            <div className={`rounded-lg border border-zinc-200 p-3 transition-colors duration-500 ${
-                              successIds.has(q.id) ? "bg-green-50 border-green-200" : "bg-white"
-                            }`}>
-                              <div className="text-xs font-medium text-zinc-700">人工得分</div>
-                              {isShort ? (
-                                <div className="flex gap-2 items-center">
-                                  <Input
-                                    type="number"
-                                    value={String(current.manualScore)}
-                                    onChange={(e) => {
-                                      const v = Number(e.target.value || 0);
-                                      setManualPatch((p) => ({
-                                        ...p,
-                                        [q.id]: { ...current, manualScore: Math.max(0, Math.floor(v)) },
-                                      }));
-                                    }}
-                                    className="mt-2 w-20"
-                                  />
-                                  <Button 
-                                    size="sm" 
-                                    className="mt-2 h-9"
-                                    onClick={() => handleSaveScore(q.id, current.manualScore, current.teacherComment)}
-                                  >
-                                    确定
-                                  </Button>
-                                </div>
-                              ) : (
-                                <div className="mt-1 text-sm font-semibold text-zinc-900">{aa?.manualScore ?? 0}</div>
-                              )}
-                            </div>
-                          </div>
-                          {isShort ? (
-                            <div className="mt-3 space-y-3">
-                              <div className="rounded-md bg-blue-50 p-3 text-xs text-blue-800">
-                                <span className="font-bold">参考答案：</span>
-                                {String(q.answerKey || "无")}
-                              </div>
-                              <div>
-                                <div className="text-xs font-medium text-zinc-700">评语</div>
-                                <Input
-                                  value={current.teacherComment}
-                                  onChange={(e) =>
-                                    setManualPatch((p) => ({
-                                      ...p,
-                                      [q.id]: { ...current, teacherComment: e.target.value },
-                                    }))
-                                  }
-                                  className="mt-2"
-                                  placeholder="可选"
-                                />
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+        );
+      })}
     </div>
   );
 }

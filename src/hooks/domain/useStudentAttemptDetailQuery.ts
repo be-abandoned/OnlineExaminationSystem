@@ -4,6 +4,7 @@ import { queryClient } from "@/lib/query/queryClient";
 import { useCachedQuery } from "@/hooks/query/useCachedQuery";
 import { usePrefetchQuery } from "@/hooks/query/usePrefetchQuery";
 import { studentGetAttemptDetailRemote } from "@/utils/remoteApi";
+import type { Attempt } from "@/types/domain";
 
 type AttemptDetailData = Awaited<ReturnType<typeof studentGetAttemptDetailRemote>>;
 
@@ -43,6 +44,16 @@ export function updateStudentAttemptAnswerCache(studentId: string, attemptId: st
           ? { ...item, answer, updatedAt: new Date().toISOString() }
           : item,
       ),
+    };
+  });
+}
+
+export function updateStudentAttemptSubmittedCache(studentId: string, attempt: Attempt) {
+  queryClient.setQueryData<AttemptDetailData>(getStudentAttemptDetailKey(studentId, attempt.id), (current) => {
+    if (!current) return current as AttemptDetailData;
+    return {
+      ...current,
+      attempt,
     };
   });
 }
