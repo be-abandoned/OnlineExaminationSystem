@@ -5,7 +5,7 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Tag from "@/components/ui/Tag";
 import Modal from "@/components/ui/Modal";
-import { EXAM_STATUS_LABELS } from "@/types/domain";
+import { EXAM_STATUS_LABELS, EXAM_STATUS_TONES } from "@/types/domain";
 import { useAuthStore } from "@/stores/authStore";
 import { teacherDeleteExamRemote, teacherUpsertExamRemote } from "@/utils/remoteApi";
 import { useTeacherExamsQuery } from "@/hooks/domain/useTeacherExamsQuery";
@@ -116,7 +116,7 @@ export default function TeacherExams() {
                     <div className="text-xs text-zinc-500">更新于 {new Date(e.updatedAt).toLocaleString()}</div>
                   </td>
                   <td className="border-b border-zinc-100 px-3 py-2">
-                    <Tag tone={e.status === "published" ? "green" : e.status === "draft" ? "zinc" : "amber"}>{EXAM_STATUS_LABELS[e.status as keyof typeof EXAM_STATUS_LABELS] ?? e.status}</Tag>
+                    <Tag tone={EXAM_STATUS_TONES[e.status as keyof typeof EXAM_STATUS_TONES] ?? "zinc"}>{EXAM_STATUS_LABELS[e.status as keyof typeof EXAM_STATUS_LABELS] ?? e.status}</Tag>
                   </td>
                   <td className="border-b border-zinc-100 px-3 py-2 text-zinc-700">{e.durationMinutes} 分钟</td>
                   <td className="border-b border-zinc-100 px-3 py-2 text-zinc-700">{counts.get(e.id) ?? 0}</td>

@@ -1,4 +1,4 @@
-import type { Attempt, AttemptAnswer, Class, Exam, ExamQuestion, ExamQuestionTypeSettings, Message, Question, QuestionType, QuestionTypePreset, User, UserRole } from "@/types/domain";
+import type { Attempt, AttemptAnswer, Class, Exam, ExamQuestion, ExamQuestionTypeSettings, ExamStatus, Message, PersistedExamStatus, Question, QuestionType, QuestionTypePreset, User, UserRole } from "@/types/domain";
 import { supabase } from "@/lib/supabase";
 import { buildAuthEmail } from "@/utils/authIdentity";
 
@@ -279,13 +279,33 @@ function mapQuestionTypePresetFromApi(p: any): QuestionTypePreset {
   };
 }
 
+function deriveExamStatusFromApi(e: any): ExamStatus {
+  const raw = String(e.status || "");
+  if (raw === "draft" || raw === "not_started" || raw === "in_progress" || raw === "ended" || raw === "graded") {
+    return raw;
+  }
+  if (raw === "closed") {
+    return "ended";
+  }
+  const now = Date.now();
+  const start = e.start_at ? Date.parse(e.start_at) : Number.NaN;
+  const end = e.end_at ? Date.parse(e.end_at) : Number.NaN;
+  if (Number.isFinite(start) && now < start) {
+    return "not_started";
+  }
+  if (Number.isFinite(end) && now > end) {
+    return "ended";
+  }
+  return "in_progress";
+}
+
 function mapExamFromApi(e: any): Exam {
   return {
     id: e.id,
     teacherId: e.teacher_id,
     title: e.title,
     description: e.description ?? undefined,
-    status: e.status,
+    status: deriveExamStatusFromApi(e),
     durationMinutes: e.duration_minutes,
     gradeLevel: e.grade_level ?? undefined,
     subjectId: e.subject_id ?? undefined,
@@ -369,7 +389,10 @@ export async function teacherListExamsRemote(teacherId: string): Promise<{
   };
 }
 
-export async function teacherUpsertExamRemote(teacherId: string, exam: Partial<Exam> & Pick<Exam, "title" | "durationMinutes">) {
+export async function teacherUpsertExamRemote(
+  teacherId: string,
+  exam: Partial<Omit<Exam, "status">> & { status?: ExamStatus | PersistedExamStatus } & Pick<Exam, "title" | "durationMinutes">,
+) {
   const data = await requestJson("/api/teacher?resource=exams", {
     method: "POST",
     body: JSON.stringify({ teacherId, exam }),
@@ -455,16 +478,28 @@ export async function teacherListAttemptsForExamRemote(teacherId: string, examId
   exam: Exam;
   attempts: Attempt[];
   studentsById: Map<string, User>;
+  questions: { eq: ExamQuestion; q: Question }[];
+  answers: AttemptAnswer[];
 }> {
   const data = await requestJson(
     `/api/teacher?resource=grading&teacherId=${encodeURIComponent(teacherId)}&examId=${encodeURIComponent(examId)}`,
   );
   const studentsById = new Map<string, User>();
   (data.students || []).map(mapUserFromApi).forEach((u: User) => studentsById.set(u.id, u));
+  const eqRows = (data.examQuestions || []).map(mapExamQuestionFromApi);
+  const qMap = new Map((data.questions || []).map((q: any) => {
+    const mapped = mapQuestionFromApi(q);
+    return [mapped.id, mapped] as const;
+  }));
+  const questions = eqRows
+    .map((eq) => ({ eq, q: qMap.get(eq.questionId) }))
+    .filter((x): x is { eq: ExamQuestion; q: Question } => Boolean(x.q));
   return {
     exam: mapExamFromApi(data.exam),
     attempts: (data.attempts || []).map(mapAttemptFromApi),
     studentsById,
+    questions,
+    answers: (data.answers || []).map(mapAttemptAnswerFromApi),
   };
 }
 
@@ -501,11 +536,15 @@ export async function teacherSaveManualScoresRemote(
   teacherId: string,
   attemptId: string,
   patch: { questionId: string; manualScore: number; teacherComment?: string }[],
-) {
-  await requestJson("/api/teacher?resource=grading", {
+): Promise<{ attempt: Attempt; answers: AttemptAnswer[] }> {
+  const data = await requestJson("/api/teacher?resource=grading", {
     method: "POST",
     body: JSON.stringify({ teacherId, attemptId, patch }),
   });
+  return {
+    attempt: mapAttemptFromApi(data.attempt),
+    answers: (data.answers || []).map(mapAttemptAnswerFromApi),
+  };
 }
 
 export async function teacherSetScorePublishedRemote(
@@ -519,6 +558,14 @@ export async function teacherSetScorePublishedRemote(
   });
 }
 
+export async function teacherPublishExamResultsRemote(teacherId: string, examId: string): Promise<Attempt[]> {
+  const data = await requestJson("/api/teacher?resource=grading", {
+    method: "PATCH",
+    body: JSON.stringify({ teacherId, examId, scorePublished: true }),
+  });
+  return (data.attempts || []).map(mapAttemptFromApi);
+}
+
 export async function studentListAssignedExamsRemote(studentId: string): Promise<Exam[]> {
   const data = await requestJson(`/api/student?resource=exams&studentId=${encodeURIComponent(studentId)}`);
   return (data.exams || []).map(mapExamFromApi);
@@ -527,6 +574,22 @@ export async function studentListAssignedExamsRemote(studentId: string): Promise
 export async function studentListAttemptsRemote(studentId: string): Promise<Attempt[]> {
   const data = await requestJson(`/api/student?resource=attempts&studentId=${encodeURIComponent(studentId)}`);
   return (data.attempts || []).map(mapAttemptFromApi);
+}
+
+export async function studentGetProfileRemote(studentId: string): Promise<{ user: User; classInfo: Class | null }> {
+  const data = await requestJson(`/api/student?resource=profile&studentId=${encodeURIComponent(studentId)}`);
+  return {
+    user: mapUserFromApi(data.user),
+    classInfo: data.class ? mapClassFromApi(data.class) : null,
+  };
+}
+
+export async function studentUpdateProfileRemote(studentId: string, patch: { displayName: string }): Promise<User> {
+  const data = await requestJson("/api/student?resource=profile", {
+    method: "POST",
+    body: JSON.stringify({ studentId, patch }),
+  });
+  return mapUserFromApi(data.user);
 }
 
 export async function studentGetExamRemote(studentId: string, examId: string): Promise<{
@@ -591,11 +654,12 @@ export async function studentSaveAnswerRemote(
   });
 }
 
-export async function studentSubmitAttemptRemote(studentId: string, attemptId: string) {
-  await requestJson("/api/student?resource=attempts", {
+export async function studentSubmitAttemptRemote(studentId: string, attemptId: string): Promise<Attempt> {
+  const data = await requestJson("/api/student?resource=attempts", {
     method: "PATCH",
     body: JSON.stringify({ studentId, attemptId }),
   });
+  return mapAttemptFromApi(data.attempt);
 }
 
 export async function adminBatchImportUsersRemote(adminId: string, users: Partial<User>[]) {
@@ -619,11 +683,13 @@ export async function teacherGetDashboardRemote(teacherId: string): Promise<{
 export async function teacherListMessagesRemote(teacherId: string): Promise<{
   sent: Message[];
   students: User[];
+  classes: Class[];
 }> {
   const data = await requestJson(`/api/teacher?resource=messages&teacherId=${encodeURIComponent(teacherId)}`);
   return {
     sent: (data.sent || []).map(mapMessageFromApi),
     students: (data.students || []).map(mapUserFromApi),
+    classes: (data.classes || []).map(mapClassFromApi),
   };
 }
 
